@@ -19,7 +19,6 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.typesafe.config.Config;
 import org.junit.After;
 import org.junit.Before;
@@ -40,8 +39,6 @@ import com.cloudera.oryx.kafka.util.LocalZKServer;
 public abstract class AbstractLambdaIT extends OryxTest {
 
   private static final Logger log = LoggerFactory.getLogger(AbstractLambdaIT.class);
-
-  protected static final ObjectMapper MAPPER = new ObjectMapper();
 
   protected static final String INPUT_TOPIC = "OryxInput";
   protected static final String UPDATE_TOPIC = "OryxUpdate";
@@ -99,9 +96,10 @@ public abstract class AbstractLambdaIT extends OryxTest {
     overlay.put("oryx.update-topic.lock.master", topicLockMaster);
     // Make sure to test both MODEL and MODEL-REF messages:
     overlay.put("oryx.update-topic.message.max-size", Integer.toString(1 << 12));
-    String masterLocalAllCores = "\"local[*]\"";
-    overlay.put("oryx.batch.streaming.master", masterLocalAllCores);
-    overlay.put("oryx.speed.streaming.master", masterLocalAllCores);
+    // Limit cores to keep tests slimmer
+    String masterLocal = "\"local[3]\"";
+    overlay.put("oryx.batch.streaming.master", masterLocal);
+    overlay.put("oryx.speed.streaming.master", masterLocal);
     overlay.put("oryx.batch.ui.port", IOUtils.chooseFreePort());
     overlay.put("oryx.speed.ui.port", IOUtils.chooseFreePort());
     return ConfigUtils.overlayOn(overlay, ConfigUtils.getDefault());

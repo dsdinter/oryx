@@ -51,12 +51,12 @@ public final class ClassUtilsTest extends OryxTest {
 
   @Test
   public void testLoadInstanceOf() {
-    assertTrue(ClassUtils.loadInstanceOf(HashSet.class) instanceof HashSet);
+    assertInstanceOf(ClassUtils.loadInstanceOf(HashSet.class), HashSet.class);
   }
 
   @Test
   public void testLoadInstanceOf2() {
-    assertTrue(ClassUtils.loadInstanceOf(HashSet.class.getName(), Set.class) instanceof HashSet);
+    assertInstanceOf(ClassUtils.loadInstanceOf(HashSet.class.getName(), Set.class), HashSet.class);
   }
 
   @Test
@@ -86,6 +86,18 @@ public final class ClassUtilsTest extends OryxTest {
     assertTrue(ClassUtils.classExists("java.lang.String"));
     assertTrue(ClassUtils.classExists("com.cloudera.oryx.common.lang.ClassUtils"));
     assertFalse(ClassUtils.classExists("java.Foo"));
+  }
+
+  @Test
+  public void testNoContextCL() {
+    Thread current = Thread.currentThread();
+    ClassLoader savedCL = current.getContextClassLoader();
+    current.setContextClassLoader(null);
+    try {
+      assertTrue(ClassUtils.classExists(ClassUtilsTest.class.getName()));
+    } finally {
+      current.setContextClassLoader(savedCL);
+    }
   }
 
 }

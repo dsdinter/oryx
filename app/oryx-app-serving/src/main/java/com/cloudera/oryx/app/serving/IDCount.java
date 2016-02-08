@@ -36,13 +36,8 @@ public final class IDCount extends IDEntity {
   }
 
   @Override
-  public String toString() {
-    return getID() + ":" + count;
-  }
-
-  @Override
-  public String toCSV() {
-    return getID() + "," + count;
+  public String valueString() {
+    return Integer.toString(count);
   }
 
 }

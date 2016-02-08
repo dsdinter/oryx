@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 import javax.inject.Singleton;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -30,18 +32,13 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.PathSegment;
 
 import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
-import net.openhft.koloboke.function.Predicate;
 
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
 import com.cloudera.oryx.app.als.RescorerProvider;
-import com.cloudera.oryx.common.collection.NotContainsPredicate;
-import com.cloudera.oryx.common.collection.Pair;
-import com.cloudera.oryx.common.collection.Predicates;
-import com.cloudera.oryx.common.math.VectorMath;
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
 import com.cloudera.oryx.app.serving.IDValue;
-import com.cloudera.oryx.app.serving.OryxServingException;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
+import com.cloudera.oryx.common.collection.Pair;
 
 /**
  * <p>Responds to a GET request to
@@ -61,7 +58,7 @@ public final class RecommendToMany extends AbstractALSResource {
 
   @GET
   @Path("{userID : .+}")
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public List<IDValue> get(
       @PathParam("userID") List<PathSegment> pathSegmentsList,
       @DefaultValue("10") @QueryParam("howMany") int howMany,
@@ -74,7 +71,7 @@ public final class RecommendToMany extends AbstractALSResource {
     check(offset >= 0, "offset must be non-negative");
 
     ALSServingModel alsServingModel = getALSServingModel();
-    double[][] userFeaturesVectors = new double[pathSegmentsList.size()][];
+    float[][] userFeaturesVectors = new float[pathSegmentsList.size()][];
     Collection<String> userKnownItems = new HashSet<>();
 
     List<String> userIDs = new ArrayList<>(userFeaturesVectors.length);
@@ -83,20 +80,15 @@ public final class RecommendToMany extends AbstractALSResource {
       userIDs.add(userID);
       float[] userFeatureVector = alsServingModel.getUserVector(userID);
       checkExists(userFeatureVector != null, userID);
-      userFeaturesVectors[i] = VectorMath.toDoubles(userFeatureVector);
+      userFeaturesVectors[i] = userFeatureVector;
       if (!considerKnownItems) {
-        Collection<String> knownItems = alsServingModel.getKnownItems(userID);
-        if (knownItems != null && !knownItems.isEmpty()) {
-          synchronized (knownItems) {
-            userKnownItems.addAll(knownItems);
-          }
-        }
+        userKnownItems.addAll(alsServingModel.getKnownItems(userID));
       }
     }
 
     Predicate<String> allowedFn = null;
     if (!userKnownItems.isEmpty()) {
-      allowedFn = new NotContainsPredicate<>(userKnownItems);
+      allowedFn = v -> !userKnownItems.contains(v);
     }
 
     ObjDoubleToDoubleFunction<String> rescoreFn = null;
@@ -104,12 +96,13 @@ public final class RecommendToMany extends AbstractALSResource {
     if (rescorerProvider != null) {
       Rescorer rescorer = rescorerProvider.getRecommendRescorer(userIDs, rescorerParams);
       if (rescorer != null) {
-        allowedFn = Predicates.and(allowedFn, buildRescorerPredicate(rescorer));
-        rescoreFn = buildRescoreFn(rescorer);
+        Predicate<String> rescorerPredicate = id -> !rescorer.isFiltered(id);
+        allowedFn = allowedFn == null ? rescorerPredicate : allowedFn.and(rescorerPredicate);
+        rescoreFn = rescorer::rescore;
       }
     }
 
-    List<Pair<String,Double>> topIDDots = alsServingModel.topN(
+    Stream<Pair<String,Double>> topIDDots = alsServingModel.topN(
         new DotsFunction(userFeaturesVectors),
         rescoreFn,
         howMany + offset,

@@ -23,10 +23,11 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeMap;
+import java.util.stream.Collectors;
 
 import com.google.common.base.Preconditions;
 import com.google.common.io.CharStreams;
@@ -60,12 +61,8 @@ public final class AppPMMLUtils {
   private AppPMMLUtils() {}
 
   public static String getExtensionValue(PMML pmml, String name) {
-    for (Extension extension : pmml.getExtensions()) {
-      if (name.equals(extension.getName())) {
-        return extension.getValue();
-      }
-    }
-    return null;
+    return pmml.getExtensions().stream().filter(extension -> name.equals(extension.getName())).findFirst().
+        map(Extension::getValue).orElse(null);
   }
 
   /**
@@ -75,17 +72,14 @@ public final class AppPMMLUtils {
    *  space-separated values, with PMML quoting rules
    */
   public static List<String> getExtensionContent(PMML pmml, String name) {
-    for (Extension extension : pmml.getExtensions()) {
-      if (name.equals(extension.getName())) {
-        List<?> content = extension.getContent();
-        Preconditions.checkArgument(content.size() <= 1);
-        if (content.isEmpty()) {
-          return Collections.emptyList();
-        }
-        return Arrays.asList(TextUtils.parsePMMLDelimited(content.get(0).toString()));
-      }
-    }
-    return null;
+    return pmml.getExtensions().stream().filter(extension -> name.equals(extension.getName())).findFirst().
+        map(extension -> {
+          List<?> content = extension.getContent();
+          Preconditions.checkArgument(content.size() <= 1);
+          return content.isEmpty() ?
+              Collections.<String>emptyList() :
+              Arrays.asList(TextUtils.parsePMMLDelimited(content.get(0).toString()));
+        }).orElse(null);
   }
 
   /**
@@ -95,7 +89,7 @@ public final class AppPMMLUtils {
    * @param value extension value
    */
   public static void addExtension(PMML pmml, String key, Object value) {
-    pmml.getExtensions().add(new Extension().setName(key).setValue(value.toString()));
+    pmml.addExtensions(new Extension().setName(key).setValue(value.toString()));
   }
 
   /**
@@ -110,7 +104,7 @@ public final class AppPMMLUtils {
       return;
     }
     String joined = TextUtils.joinPMMLDelimited(content);
-    pmml.getExtensions().add(new Extension().setName(key).addContent(joined));
+    pmml.addExtensions(new Extension().setName(key).addContent(joined));
   }
 
   /**
@@ -180,11 +174,8 @@ public final class AppPMMLUtils {
    * @return names of features in order
    */
   public static List<String> getFeatureNames(MiningSchema miningSchema) {
-    List<String> names = new ArrayList<>();
-    for (MiningField field : miningSchema.getMiningFields()) {
-      names.add(field.getName().getValue());
-    }
-    return names;
+    return miningSchema.getMiningFields().stream().map(field -> field.getName().getValue())
+        .collect(Collectors.toList());
   }
 
   /**
@@ -224,11 +215,10 @@ public final class AppPMMLUtils {
       }
       DataField field = new DataField(FieldName.create(featureName), opType, dataType);
       if (schema.isCategorical(featureName)) {
-        Collection<String> valuesOrderedByEncoding =
-            new TreeMap<>(categoricalValueEncodings.getEncodingValueMap(featureIndex)).values();
-        for (String value : valuesOrderedByEncoding) {
-          field.getValues().add(new Value(value));
-        }
+        categoricalValueEncodings.getEncodingValueMap(featureIndex).entrySet().stream().
+            sorted(Comparator.comparing(Map.Entry::getKey)).
+            map(Map.Entry::getValue).
+            forEach(value -> field.addValues(new Value(value)));
       }
       dataFields.add(field);
     }
@@ -245,11 +235,7 @@ public final class AppPMMLUtils {
     List<DataField> dataFields = dictionary.getDataFields();
     Preconditions.checkArgument(dataFields != null && !dataFields.isEmpty(),
                                 "No fields in DataDictionary");
-    List<String> names = new ArrayList<>(dataFields.size());
-    for (TypeDefinitionField field : dataFields) {
-      names.add(field.getName().getValue());
-    }
-    return names;
+    return dataFields.stream().map(field -> field.getName().getValue()).collect(Collectors.toList());
   }
 
   public static CategoricalValueEncodings buildCategoricalValueEncodings(
@@ -260,10 +246,7 @@ public final class AppPMMLUtils {
       TypeDefinitionField field = dataFields.get(featureIndex);
       Collection<Value> values = field.getValues();
       if (values != null && !values.isEmpty()) {
-        Collection<String> categoricalValues = new ArrayList<>();
-        for (Value value : values) {
-          categoricalValues.add(value.getValue());
-        }
+        Collection<String> categoricalValues = values.stream().map(Value::getValue).collect(Collectors.toList());
         indexToValues.put(featureIndex, categoricalValues);
       }
     }
@@ -283,8 +266,9 @@ public final class AppPMMLUtils {
         if (hadoopConf == null) {
           hadoopConf = new Configuration();
         }
-        FileSystem fs = FileSystem.get(hadoopConf);
-        try (InputStreamReader in = new InputStreamReader(fs.open(new Path(message)), StandardCharsets.UTF_8)) {
+        Path messagePath = new Path(message);
+        FileSystem fs = FileSystem.get(messagePath.toUri(), hadoopConf);
+        try (InputStreamReader in = new InputStreamReader(fs.open(messagePath), StandardCharsets.UTF_8)) {
           pmmlString = CharStreams.toString(in);
         }
         break;

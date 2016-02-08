@@ -15,10 +15,10 @@
 
 package com.cloudera.oryx.app.common.fn;
 
+import java.io.IOException;
 import java.util.Arrays;
 
 import org.junit.Test;
-import scala.Tuple2;
 
 import com.cloudera.oryx.common.OryxTest;
 
@@ -58,18 +58,23 @@ public final class MLFunctionsTest extends OryxTest {
   }
 
   @Test
-  public void testNotNaN() throws Exception {
-    assertTrue(MLFunctions.<String>notNaNValue().call(new Tuple2<>("foo", 0.0)));
-    assertFalse(MLFunctions.<String>notNaNValue().call(new Tuple2<>("foo", Double.NaN)));
-  }
-
-  @Test
   public void testSumWithNaN() throws Exception {
     OryxTest.assertEquals(1.0, MLFunctions.SUM_WITH_NAN.call(Arrays.asList(1.0)).doubleValue());
     OryxTest.assertEquals(6.0, MLFunctions.SUM_WITH_NAN.call(Arrays.asList(1.0, 2.0, 3.0)).doubleValue());
     OryxTest.assertEquals(3.0, MLFunctions.SUM_WITH_NAN.call(Arrays.asList(1.0, Double.NaN, 3.0)).doubleValue());
-    assertTrue(Double.isNaN(MLFunctions.SUM_WITH_NAN.call(Arrays.asList(1.0, 2.0, Double.NaN))));
-    assertTrue(Double.isNaN(MLFunctions.SUM_WITH_NAN.call(Arrays.asList(Double.NaN))));
+    assertNaN(MLFunctions.SUM_WITH_NAN.call(Arrays.asList(1.0, 2.0, Double.NaN)));
+    assertNaN(MLFunctions.SUM_WITH_NAN.call(Arrays.asList(Double.NaN)));
   }
+
+  @Test(expected = IOException.class)
+  public void testParseBadLine() throws Exception {
+    MLFunctions.PARSE_FN.call("[1,]");
+  }
+
+  @Test(expected = ArrayIndexOutOfBoundsException.class)
+  public void testParseBadTimestamp() throws Exception {
+    MLFunctions.TO_TIMESTAMP_FN.call("[1,2,3]");
+  }
+
 
 }

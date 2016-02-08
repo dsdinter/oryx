@@ -21,6 +21,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import org.apache.commons.math3.distribution.PoissonDistribution;
 import org.apache.commons.math3.random.RandomGenerator;
@@ -76,10 +77,10 @@ public final class ALSServingModelTest extends OryxTest {
     ALSServingModel model = new ALSServingModel(2, true, 1.0, null);
 
     model.setUserVector("U0", new float[] { 1.0f, 1.0f });
-    model.retainRecentAndUserIDs(Collections.<String>emptyList());
+    model.retainRecentAndUserIDs(Collections.emptyList());
     // Protected because of recent user/items
     assertNotNull(model.getUserVector("U0"));
-    model.retainRecentAndUserIDs(Collections.<String>emptyList());
+    model.retainRecentAndUserIDs(Collections.emptyList());
     assertNull(model.getUserVector("U0"));
 
     model.setUserVector("U0", new float[] { 1.0f, 1.0f });
@@ -89,10 +90,10 @@ public final class ALSServingModelTest extends OryxTest {
     assertNotNull(model.getUserVector("U0"));
 
     model.setItemVector("I0", new float[]{1.0f, 1.0f});
-    model.retainRecentAndItemIDs(Collections.<String>emptyList());
+    model.retainRecentAndItemIDs(Collections.emptyList());
     // Protected because of recent user/items
     assertNotNull(model.getItemVector("I0"));
-    model.retainRecentAndItemIDs(Collections.<String>emptyList());
+    model.retainRecentAndItemIDs(Collections.emptyList());
     assertNull(model.getItemVector("I0"));
 
     model.setItemVector("I0", new float[]{1.0f, 1.0f});
@@ -108,34 +109,34 @@ public final class ALSServingModelTest extends OryxTest {
     populateKnownItems(model);
     for (int i = 0; i < 10; i++) {
       model.setUserVector("U" + i, new float[] { 0.0f, 0.0f });
-      model.setItemVector("I" + i, new float[]{0.0f, 0.0f});
+      model.setItemVector("I" + i, new float[] { 0.0f, 0.0f });
     }
     model.retainRecentAndKnownItems(Arrays.asList("U4", "U5", "U6"), Arrays.asList("I4", "I5", "I6"));
-    assertTrue(model.getKnownItems("U3").contains("I4"));
-    assertTrue(model.getKnownItems("U4").contains("I4"));
-    assertTrue(model.getKnownItems("U6").contains("I6"));
-    assertTrue(model.getKnownItems("U6").contains("I7"));
+    assertContains(model.getKnownItems("U3"), "I4");
+    assertContains(model.getKnownItems("U4"), "I4");
+    assertContains(model.getKnownItems("U6"), "I6");
+    assertContains(model.getKnownItems("U6"), "I7");
     // Protected because of recent user/items
-    assertTrue(model.getKnownItems("U2").contains("I2"));
+    assertContains(model.getKnownItems("U2"), "I2");
 
     // Clears recent user/items
-    model.retainRecentAndUserIDs(Collections.<String>emptyList());
-    model.retainRecentAndItemIDs(Collections.<String>emptyList());
+    model.retainRecentAndUserIDs(Collections.emptyList());
+    model.retainRecentAndItemIDs(Collections.emptyList());
 
     model.retainRecentAndKnownItems(Arrays.asList("U4", "U5", "U6"), Arrays.asList("I4", "I5", "I6"));
-    assertNull(model.getKnownItems("U3"));
-    assertTrue(model.getKnownItems("U4").contains("I4"));
-    assertTrue(model.getKnownItems("U6").contains("I6"));
-    assertFalse(model.getKnownItems("U6").contains("I7"));
-    assertNull(model.getKnownItems("U2"));
+    assertEquals(0, model.getKnownItems("U3").size());
+    assertContains(model.getKnownItems("U4"), "I4");
+    assertContains(model.getKnownItems("U6"), "I6");
+    assertNotContains(model.getKnownItems("U6"), "I7");
+    assertEquals(0, model.getKnownItems("U2").size());
   }
 
   @Test
   public void testToString() {
     String modelToString = new ALSServingModel(2, true, 1.0, null).toString();
-    assertTrue(modelToString.contains("ALSServingModel"));
-    assertTrue(modelToString.contains("features:2"));
-    assertTrue(modelToString.contains("implicit:true"));
+    assertContains(modelToString, "ALSServingModel");
+    assertContains(modelToString, "features:2");
+    assertContains(modelToString, "implicit:true");
   }
 
   private static void populateKnownItems(ALSServingModel model) {
@@ -188,10 +189,10 @@ public final class ALSServingModelTest extends OryxTest {
     Mean meanMatchLength = new Mean();
     for (int user = 0; user < userItemCount; user++) {
       String userID = "U" + user;
-      List<Pair<String,Double>> mainRecs =
-          mainModel.topN(new DotsFunction(mainModel.getUserVector(userID)), null, numRecs, null);
-      List<Pair<String,Double>> lshRecs =
-          lshModel.topN(new DotsFunction(lshModel.getUserVector(userID)), null, numRecs, null);
+      List<Pair<String,Double>> mainRecs = mainModel.topN(new DotsFunction(mainModel.getUserVector(userID)),
+                                                          null, numRecs, null).collect(Collectors.toList());
+      List<Pair<String,Double>> lshRecs = lshModel.topN(new DotsFunction(lshModel.getUserVector(userID)),
+                                                        null, numRecs, null).collect(Collectors.toList());
       int i = 0;
       while (i < lshRecs.size() && i < mainRecs.size() && lshRecs.get(i).equals(mainRecs.get(i))) {
         i++;
@@ -199,15 +200,15 @@ public final class ALSServingModelTest extends OryxTest {
       meanMatchLength.increment(i);
     }
     log.info("Mean matching prefix: {}", meanMatchLength.getResult());
-    assertTrue(meanMatchLength.getResult() >= 4.0);
+    assertGreaterOrEqual(meanMatchLength.getResult(), 4.0);
 
     meanMatchLength.clear();
     for (int item = 0; item < userItemCount; item++) {
       String itemID = "I" + item;
-      List<Pair<String,Double>> mainRecs =
-          mainModel.topN(new CosineAverageFunction(mainModel.getItemVector(itemID)), null, numRecs, null);
-      List<Pair<String,Double>> lshRecs =
-          lshModel.topN(new CosineAverageFunction(lshModel.getItemVector(itemID)), null, numRecs, null);
+      List<Pair<String,Double>> mainRecs = mainModel.topN(new CosineAverageFunction(mainModel.getItemVector(itemID)),
+                                                          null, numRecs, null).collect(Collectors.toList());
+      List<Pair<String,Double>> lshRecs = lshModel.topN(new CosineAverageFunction(lshModel.getItemVector(itemID)),
+                                                        null, numRecs, null).collect(Collectors.toList());
       int i = 0;
       while (i < lshRecs.size() && i < mainRecs.size() && lshRecs.get(i).equals(mainRecs.get(i))) {
         i++;
@@ -215,13 +216,14 @@ public final class ALSServingModelTest extends OryxTest {
       meanMatchLength.increment(i);
     }
     log.info("Mean matching prefix: {}", meanMatchLength.getResult());
-    assertTrue(meanMatchLength.getResult() >= 5.0);
+    assertGreaterOrEqual(meanMatchLength.getResult(), 5.0);
   }
 
   @Test
   public void testFractionLoaded() {
     assertEquals(1.0f, new ALSServingModel(2, true, 1.0, null).getFractionLoaded());
     ALSServingModel model = new ALSServingModel(2, true, 1.0, null);
+    assertNotNull(model.toString());
     model.retainRecentAndUserIDs(Collections.singleton("U1"));
     model.retainRecentAndItemIDs(Collections.singleton("I0"));
     assertEquals(0.0f, model.getFractionLoaded());

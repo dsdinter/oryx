@@ -39,9 +39,7 @@ public final class CategoricalValueEncodings implements Serializable {
    */
   public CategoricalValueEncodings(Map<Integer,? extends Collection<String>> distinctValues) {
     encodingsForIndex = new HashMap<>(distinctValues.size());
-    for (Map.Entry<Integer,? extends Collection<String>> e : distinctValues.entrySet()) {
-      encodingsForIndex.put(e.getKey(), mapDistinctValues(e.getValue()));
-    }
+    distinctValues.forEach((k, v) -> encodingsForIndex.put(k, mapDistinctValues(v)));
   }
 
   private static <T> BiMap<T,Integer> mapDistinctValues(Collection<T> distinct) {
@@ -85,17 +83,13 @@ public final class CategoricalValueEncodings implements Serializable {
    */
   public Map<Integer,Integer> getCategoryCounts() {
     Map<Integer,Integer> counts = new HashMap<>(encodingsForIndex.size());
-    for (Map.Entry<Integer,BiMap<String,Integer>> entry : encodingsForIndex.entrySet()) {
-      counts.put(entry.getKey(), entry.getValue().size());
-    }
+    encodingsForIndex.forEach((k, v) -> counts.put(k, v.size()));
     return counts;
   }
 
   private BiMap<String,Integer> doGetMap(int index) {
     Preconditions.checkArgument(index >= 0);
-    BiMap<String,Integer> map = encodingsForIndex.get(index);
-    Objects.requireNonNull(map, "No values for index " + index);
-    return map;
+    return Objects.requireNonNull(encodingsForIndex.get(index), "No values for index " + index);
   }
 
   @Override

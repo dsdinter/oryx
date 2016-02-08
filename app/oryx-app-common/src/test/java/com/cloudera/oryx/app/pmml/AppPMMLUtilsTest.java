@@ -15,6 +15,8 @@
 
 package com.cloudera.oryx.app.pmml;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -52,7 +54,7 @@ public final class AppPMMLUtilsTest extends OryxTest {
     Node node = new Node().setRecordCount(123.0);
     TreeModel treeModel = new TreeModel(MiningFunctionType.CLASSIFICATION, null, node);
     PMML pmml = PMMLUtils.buildSkeletonPMML();
-    pmml.getModels().add(treeModel);
+    pmml.addModels(treeModel);
     return pmml;
   }
 
@@ -184,8 +186,7 @@ public final class AppPMMLUtilsTest extends OryxTest {
     dataFields.add(new DataField(FieldName.create("foo"), OpType.CONTINUOUS, DataType.DOUBLE));
     DataField barField =
         new DataField(FieldName.create("bar"), OpType.CATEGORICAL, DataType.STRING);
-    barField.getValues().add(new Value("b"));
-    barField.getValues().add(new Value("a"));
+    barField.addValues(new Value("b"), new Value("a"));
     dataFields.add(barField);
     DataDictionary dictionary = new DataDictionary(dataFields).setNumberOfFields(dataFields.size());
     CategoricalValueEncodings encodings = AppPMMLUtils.buildCategoricalValueEncodings(dictionary);
@@ -195,6 +196,19 @@ public final class AppPMMLUtilsTest extends OryxTest {
     assertEquals("b", encodings.getEncodingValueMap(1).get(0));
     assertEquals("a", encodings.getEncodingValueMap(1).get(1));
     assertEquals(Collections.singletonMap(1, 2), encodings.getCategoryCounts());
+  }
+
+  @Test
+  public void testReadPMMLFromMessage() throws Exception {
+    PMML pmml = PMMLUtils.buildSkeletonPMML();
+    String pmmlString = PMMLUtils.toString(pmml);
+    assertEquals(PMMLUtils.VERSION, AppPMMLUtils.readPMMLFromUpdateKeyMessage(
+        "MODEL", pmmlString, null).getVersion());
+
+    Path pmmlPath = getTempDir().resolve("out.pmml");
+    Files.write(pmmlPath, Collections.singleton(pmmlString));
+    assertEquals(PMMLUtils.VERSION, AppPMMLUtils.readPMMLFromUpdateKeyMessage(
+        "MODEL-REF", pmmlPath.toAbsolutePath().toString(), null).getVersion());
   }
 
 }

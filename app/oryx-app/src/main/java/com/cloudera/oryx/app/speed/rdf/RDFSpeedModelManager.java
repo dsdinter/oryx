@@ -19,20 +19,17 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.DoubleSummaryStatistics;
 import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
-import com.google.common.util.concurrent.AtomicLongMap;
 import com.typesafe.config.Config;
-import org.apache.commons.math3.stat.descriptive.moment.Mean;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
-import org.apache.spark.api.java.function.Function;
-import org.apache.spark.api.java.function.PairFlatMapFunction;
 import org.dmg.pmml.PMML;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,14 +37,14 @@ import scala.Tuple2;
 
 import com.cloudera.oryx.api.KeyMessage;
 import com.cloudera.oryx.api.speed.SpeedModelManager;
+import com.cloudera.oryx.app.classreg.example.CategoricalFeature;
+import com.cloudera.oryx.app.classreg.example.Example;
+import com.cloudera.oryx.app.classreg.example.ExampleUtils;
+import com.cloudera.oryx.app.classreg.example.Feature;
+import com.cloudera.oryx.app.classreg.example.NumericFeature;
 import com.cloudera.oryx.app.common.fn.MLFunctions;
 import com.cloudera.oryx.app.pmml.AppPMMLUtils;
 import com.cloudera.oryx.app.rdf.RDFPMMLUtils;
-import com.cloudera.oryx.app.rdf.ToExampleFn;
-import com.cloudera.oryx.app.rdf.example.CategoricalFeature;
-import com.cloudera.oryx.app.rdf.example.Example;
-import com.cloudera.oryx.app.rdf.example.Feature;
-import com.cloudera.oryx.app.rdf.example.NumericFeature;
 import com.cloudera.oryx.app.rdf.tree.DecisionForest;
 import com.cloudera.oryx.app.rdf.tree.DecisionTree;
 import com.cloudera.oryx.app.schema.CategoricalValueEncodings;
@@ -75,9 +72,8 @@ public final class RDFSpeedModelManager implements SpeedModelManager<String,Stri
       throws IOException {
     while (updateIterator.hasNext()) {
       KeyMessage<String,String> km = updateIterator.next();
-      String key = km.getKey();
+      String key = Objects.requireNonNull(km.getKey(), "Bad message: " + km);
       String message = km.getMessage();
-      Objects.requireNonNull(key, "Bad message: " + km);
       switch (key) {
         case "UP":
           // Nothing to do; just hearing our own updates
@@ -104,88 +100,54 @@ public final class RDFSpeedModelManager implements SpeedModelManager<String,Stri
       return Collections.emptyList();
     }
 
-    JavaRDD<Example> examplesRDD = newData.values().map(MLFunctions.PARSE_FN)
-            .map(new ToExampleFn(inputSchema, model.getEncodings()));
+    InputSchema inputSchema = this.inputSchema;
+    CategoricalValueEncodings valueEncodings = model.getEncodings();
+    JavaRDD<Example> examplesRDD = newData.values().map(MLFunctions.PARSE_FN).
+        map(data -> ExampleUtils.dataToExample(data, inputSchema, valueEncodings));
 
     DecisionForest forest = model.getForest();
     JavaPairRDD<Pair<Integer,String>,Iterable<Feature>> targetsByTreeAndID =
-        examplesRDD.flatMapToPair(new ToTreeNodeFeatureFn(forest)).groupByKey();
+        examplesRDD.flatMapToPair(example -> {
+          Feature target = example.getTarget();
+          DecisionTree[] trees = forest.getTrees();
+          List<Tuple2<Pair<Integer,String>,Feature>> results = new ArrayList<>(trees.length);
+          for (int treeID = 0; treeID < trees.length; treeID++) {
+            String id = trees[treeID].findTerminal(example).getID();
+            results.add(new Tuple2<>(new Pair<>(treeID, id), target));
+          }
+          return results;
+        }).groupByKey();
 
-    List<String> updates = new ArrayList<>();
 
     if (inputSchema.isClassification()) {
 
-      List<Tuple2<Pair<Integer,String>,Map<Integer,Long>>> countsByTreeAndID =
-          targetsByTreeAndID.mapValues(new TargetCategoryCountFn()).collect();
-      for (Tuple2<Pair<Integer,String>,Map<Integer,Long>> p : countsByTreeAndID) {
+      return targetsByTreeAndID.mapValues(categoricalTargets ->
+        StreamSupport.stream(categoricalTargets.spliterator(), false)
+            .collect(Collectors.groupingBy(f -> ((CategoricalFeature) f).getEncoding(), Collectors.counting()))
+      ).collect().stream().map(p -> {
+        // This happens on the driver since the call below uses Jackson, and we have a version
+        // conflict with Spark. Or did.
         Integer treeID = p._1().getFirst();
         String nodeID = p._1().getSecond();
-        updates.add(TextUtils.joinJSON(Arrays.asList(treeID, nodeID, p._2())));
-      }
+        return TextUtils.joinJSON(Arrays.asList(treeID, nodeID, p._2()));
+      }).collect(Collectors.toList());
 
     } else {
 
-      List<Tuple2<Pair<Integer,String>,Mean>> meanTargetsByTreeAndID =
-          targetsByTreeAndID.mapValues(new MeanNewTargetFn()).collect();
-      for (Tuple2<Pair<Integer,String>,Mean> p : meanTargetsByTreeAndID) {
+      return targetsByTreeAndID.mapValues(numericTargets ->
+        StreamSupport.stream(numericTargets.spliterator(), false)
+            .collect(Collectors.summarizingDouble(f -> ((NumericFeature) f).getValue()))
+      ).collect().stream().map(p -> {
+        // This happens on the driver since the call below uses Jackson, and we have a version
+        // conflict with Spark. Or did.
         Integer treeID = p._1().getFirst();
         String nodeID = p._1().getSecond();
-        Mean mean = p._2();
-        updates.add(TextUtils.joinJSON(Arrays.asList(
-            treeID, nodeID, mean.getResult(), mean.getN())));
-      }
+        DoubleSummaryStatistics stats = p._2();
+        return TextUtils.joinJSON(Arrays.asList(treeID, nodeID, stats.getAverage(), stats.getCount()));
+      }).collect(Collectors.toList());
 
     }
 
-    return updates;
-  }
-
-  @Override
-  public void close() {
-    // do nothing
-  }
-
-  private static final class ToTreeNodeFeatureFn
-      implements PairFlatMapFunction<Example,Pair<Integer,String>,Feature> {
-    private final DecisionForest forest;
-    ToTreeNodeFeatureFn(DecisionForest forest) {
-      this.forest = forest;
-    }
-    @Override
-    public Iterable<Tuple2<Pair<Integer,String>,Feature>> call(Example example) {
-      Feature target = example.getTarget();
-      DecisionTree[] trees = forest.getTrees();
-      List<Tuple2<Pair<Integer,String>,Feature>> results = new ArrayList<>(trees.length);
-      for (int treeID = 0; treeID < trees.length; treeID++) {
-        String id = trees[treeID].findTerminal(example).getID();
-        results.add(new Tuple2<>(new Pair<>(treeID, id), target));
-      }
-      return results;
-    }
-  }
-
-  private static final class MeanNewTargetFn implements Function<Iterable<Feature>,Mean> {
-    @Override
-    public Mean call(Iterable<Feature> numericTargets) {
-      Mean mean = new Mean();
-      for (Feature f : numericTargets) {
-        mean.increment(((NumericFeature) f).getValue());
-      }
-      return mean;
-    }
-  }
-
-  private static final class TargetCategoryCountFn
-      implements Function<Iterable<Feature>,Map<Integer,Long>> {
-    @Override
-    public Map<Integer,Long> call(Iterable<Feature> categoricalTargets) {
-      AtomicLongMap<Integer> categoryCounts = AtomicLongMap.create();
-      for (Feature f : categoricalTargets) {
-        categoryCounts.incrementAndGet(((CategoricalFeature) f).getEncoding());
-      }
-      // Have to clone it as Kryo won't serialize the unmodifiable map
-      return new HashMap<>(categoryCounts.asMap());
-    }
   }
 
 }

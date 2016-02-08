@@ -22,8 +22,10 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
-import com.cloudera.oryx.app.serving.OryxServingException;
+import com.cloudera.oryx.api.serving.OryxServingException;
+import com.cloudera.oryx.app.kmeans.KMeansUtils;
+import com.cloudera.oryx.app.serving.AbstractOryxResource;
+import com.cloudera.oryx.app.serving.kmeans.model.KMeansServingModel;
 import com.cloudera.oryx.common.text.TextUtils;
 
 /**
@@ -31,19 +33,20 @@ import com.cloudera.oryx.common.text.TextUtils;
  * to cluster, delimited, like "1,foo,3.0".</p>
  *
  * <p>The response body contains the distance from the point to its nearest cluster center.
- * The distance function depends on the model.</p>
+ * The distance function depends on the model. For now the default is Euclidean distance.</p>
  */
 @Singleton
 @Path("/distanceToNearest")
-public final class DistanceToNearest extends AbstractKMeansResource {
+public final class DistanceToNearest extends AbstractOryxResource {
 
   @GET
   @Path("{datum}")
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public String get(@PathParam("datum") String datum) throws OryxServingException {
     check(datum != null && !datum.isEmpty(), "Data is needed to cluster");
+    KMeansServingModel model = (KMeansServingModel) getServingModel();
     String[] tokens = TextUtils.parseDelimited(datum, ',');
-    return cluster(tokens).getSecond().toString();
+    return model.closestCluster(KMeansUtils.featuresFromTokens(tokens, model.getInputSchema())).getSecond().toString();
   }
 
 }

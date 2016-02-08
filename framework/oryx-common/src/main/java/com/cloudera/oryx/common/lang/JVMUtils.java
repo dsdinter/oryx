@@ -16,44 +16,35 @@
 package com.cloudera.oryx.common.lang;
 
 import java.io.Closeable;
-import java.util.Deque;
-import java.util.LinkedList;
-import java.util.Objects;
 
-import com.cloudera.oryx.common.io.IOUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * JVM-related utility methods.
  */
 public final class JVMUtils {
 
-  private static final Deque<Closeable> closeAtShutdown = new LinkedList<>();
+  private static final Logger log = LoggerFactory.getLogger(JVMUtils.class);
+
+  private static final OryxShutdownHook SHUTDOWN_HOOK = new OryxShutdownHook();
 
   private JVMUtils() {
   }
 
   /**
-   * Adds a shutdown hook that try to call {@link Closeable#close()} on the given argument
+   * Adds a shutdown hook that tries to call {@link Closeable#close()} on the given argument
    * at JVM shutdown.
    *
    * @param closeable thing to close
    */
   public static void closeAtShutdown(Closeable closeable) {
-    Objects.requireNonNull(closeable);
-    synchronized (closeAtShutdown) {
-      if (closeAtShutdown.isEmpty()) {
-        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
-          @Override
-          public void run() {
-            synchronized (closeAtShutdown) {
-              for (Closeable c : closeAtShutdown) {
-                IOUtils.closeQuietly(c);
-              }
-            }
-          }
-        }, "OryxShutdownHookThread"));
+    if (SHUTDOWN_HOOK.addCloseable(closeable)) {
+      try {
+        Runtime.getRuntime().addShutdownHook(new Thread(SHUTDOWN_HOOK, "OryxShutdownHookThread"));
+      } catch (IllegalStateException ise) {
+        log.warn("Can't close {} at shutdown since shutdown is in progress", closeable);
       }
-      closeAtShutdown.push(closeable);
     }
   }
 

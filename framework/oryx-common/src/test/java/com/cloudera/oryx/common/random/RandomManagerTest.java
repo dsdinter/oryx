@@ -22,11 +22,24 @@ import org.junit.Test;
 public final class RandomManagerTest extends OryxTest {
 
   @Test
+  public void testUnseededRandomState() {
+    RandomGenerator generator = RandomManager.getUnseededRandom();
+    assertNotEquals(1553355631, generator.nextInt());
+  }
+
+  @Test
   public void testRandomState() {
     // Really, a test that the random generator state is reset in tests
     RandomGenerator generator = RandomManager.getRandom();
     assertEquals(1553355631, generator.nextInt());
     assertNotEquals(1553355631, generator.nextInt());
+  }
+
+  @Test
+  public void testRandomStateWithSeed() {
+    RandomGenerator generator = RandomManager.getRandom(1234L);
+    assertEquals(35755635, generator.nextInt());
+    assertNotEquals(35755635, generator.nextInt());
   }
 
 }

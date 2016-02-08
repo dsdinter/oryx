@@ -16,13 +16,14 @@
 package com.cloudera.oryx.app.serving.als.model;
 
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
 import com.typesafe.config.Config;
 import org.apache.hadoop.conf.Configuration;
@@ -31,31 +32,30 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.cloudera.oryx.api.KeyMessage;
-import com.cloudera.oryx.api.serving.ServingModelManager;
-import com.cloudera.oryx.app.als.AbstractRescorerProvider;
+import com.cloudera.oryx.api.serving.AbstractServingModelManager;
+import com.cloudera.oryx.app.als.MultiRescorerProvider;
 import com.cloudera.oryx.app.als.RescorerProvider;
 import com.cloudera.oryx.app.pmml.AppPMMLUtils;
 import com.cloudera.oryx.common.settings.ConfigUtils;
+import com.cloudera.oryx.common.text.TextUtils;
 
 /**
- * A {@link ServingModelManager} that manages and provides access to an {@link ALSServingModel}
- * for the ALS Serving Layer application.
+ * A {@link com.cloudera.oryx.api.serving.ServingModelManager} that manages and provides access to an
+ * {@link ALSServingModel} for the ALS Serving Layer application.
  */
-public final class ALSServingModelManager implements ServingModelManager<String> {
+public final class ALSServingModelManager extends AbstractServingModelManager<String> {
 
   private static final Logger log = LoggerFactory.getLogger(ALSServingModelManager.class);
-  private static final ObjectMapper MAPPER = new ObjectMapper();
 
-  private final Config config;
   private ALSServingModel model;
   private final double sampleRate;
   private final RescorerProvider rescorerProvider;
 
   public ALSServingModelManager(Config config) {
-    this.config = config;
+    super(config);
     String rescorerProviderClass =
         ConfigUtils.getOptionalString(config, "oryx.als.rescorer-provider-class");
-    rescorerProvider = AbstractRescorerProvider.loadRescorerProviders(rescorerProviderClass);
+    rescorerProvider = loadRescorerProviders(rescorerProviderClass);
     sampleRate = config.getDouble("oryx.als.sample-rate");
     Preconditions.checkArgument(sampleRate > 0.0 && sampleRate <= 1.0);
   }
@@ -66,18 +66,17 @@ public final class ALSServingModelManager implements ServingModelManager<String>
     int countdownToLogModel = 10000;
     while (updateIterator.hasNext()) {
       KeyMessage<String,String> km = updateIterator.next();
-      String key = km.getKey();
+      String key = Objects.requireNonNull(km.getKey(), "Bad message: " + km);
       String message = km.getMessage();
-      Objects.requireNonNull(key, "Bad message: " + km);
       switch (key) {
         case "UP":
           if (model == null) {
             continue; // No model to interpret with yet, so skip it
           }
-          List<?> update = MAPPER.readValue(message, List.class);
+          List<?> update = TextUtils.readJSON(message, List.class);
           // Update
           String id = update.get(1).toString();
-          float[] vector = MAPPER.convertValue(update.get(2), float[].class);
+          float[] vector = TextUtils.convertViaJSON(update.get(2), float[].class);
           switch (update.get(0).toString()) {
             case "X":
               model.setUserVector(id, vector);
@@ -130,18 +129,48 @@ public final class ALSServingModelManager implements ServingModelManager<String>
   }
 
   @Override
-  public Config getConfig() {
-    return config;
-  }
-
-  @Override
   public ALSServingModel getModel() {
     return model;
   }
 
-  @Override
-  public void close() {
-    // do nothing
+  /**
+   * @param classNamesString a comma-delimited list of class names, where classes implement
+   *  {@link RescorerProvider}
+   * @return a {@link RescorerProvider} which rescores using all of them
+   */
+  static RescorerProvider loadRescorerProviders(String classNamesString) {
+    if (classNamesString == null || classNamesString.isEmpty()) {
+      return null;
+    }
+    String[] classNames = classNamesString.split(",");
+    if (classNames.length == 1) {
+      return loadInstanceOf(classNames[0]);
+    }
+    RescorerProvider[] providers = new RescorerProvider[classNames.length];
+    for (int i = 0; i < classNames.length; i++) {
+      providers[i] = loadInstanceOf(classNames[i]);
+    }
+    return MultiRescorerProvider.of(providers);
+  }
+
+  private static RescorerProvider loadInstanceOf(String implClassName) {
+    try {
+      // ClassUtils is not available here
+      Class<? extends RescorerProvider> configClass =
+          Class.forName(implClassName, true, RescorerProvider.class.getClassLoader())
+              .asSubclass(RescorerProvider.class);
+      Constructor<? extends RescorerProvider> constructor = configClass.getConstructor();
+      return constructor.newInstance();
+    } catch (ClassNotFoundException e) {
+      throw new IllegalArgumentException(
+          "Could not load " + implClassName + " due to exception", e);
+    } catch (NoSuchMethodException | InstantiationException | IllegalAccessException e) {
+      throw new IllegalArgumentException(
+          "Could not instantiate " + implClassName + " due to exception", e);
+    } catch (InvocationTargetException ite) {
+      throw new IllegalStateException(
+          "Could not instantiate " + implClassName + " due to exception", ite.getCause());
+    }
   }
 
 }

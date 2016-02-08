@@ -20,6 +20,7 @@ import java.io.IOException;
 import java.io.Reader;
 import javax.inject.Singleton;
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.Part;
 import javax.ws.rs.Consumes;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
@@ -27,10 +28,7 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import org.apache.commons.fileupload.FileItem;
-
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
-import com.cloudera.oryx.app.serving.OryxServingException;
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.common.text.TextUtils;
 
 /**
@@ -63,15 +61,17 @@ import com.cloudera.oryx.common.text.TextUtils;
 public final class Ingest extends AbstractALSResource {
 
   @POST
-  @Consumes({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Consumes({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public void post(Reader reader) throws IOException, OryxServingException {
+    checkNotReadOnly();
     doPost(maybeBuffer(reader));
   }
 
   @POST
   @Consumes(MediaType.MULTIPART_FORM_DATA)
   public void post(@Context HttpServletRequest request) throws IOException, OryxServingException {
-    for (FileItem item : parseMultipart(request)) {
+    checkNotReadOnly();
+    for (Part item : parseMultipart(request)) {
       try (BufferedReader reader = maybeBuffer(maybeDecompress(item))) {
         doPost(reader);
       }

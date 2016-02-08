@@ -20,20 +20,19 @@ import javax.servlet.ServletContextEvent;
 import javax.servlet.ServletContextListener;
 import javax.servlet.annotation.WebListener;
 
-import java.io.IOException;
+import java.io.Closeable;
 import java.util.Collections;
+import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.Objects;
+import java.util.stream.StreamSupport;
 
-import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterators;
 import com.typesafe.config.Config;
 import kafka.consumer.Consumer;
 import kafka.consumer.ConsumerConfig;
 import kafka.consumer.KafkaStream;
 import kafka.javaapi.consumer.ConsumerConnector;
-import kafka.message.MessageAndMetadata;
 import kafka.serializer.Decoder;
 import kafka.serializer.StringDecoder;
 import kafka.utils.VerifiableProperties;
@@ -47,7 +46,7 @@ import com.cloudera.oryx.api.TopicProducer;
 import com.cloudera.oryx.api.serving.ScalaServingModelManager;
 import com.cloudera.oryx.api.serving.ServingModelManager;
 import com.cloudera.oryx.common.lang.ClassUtils;
-import com.cloudera.oryx.common.lang.LoggingRunnable;
+import com.cloudera.oryx.common.lang.LoggingCallable;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.kafka.util.KafkaUtils;
 
@@ -60,18 +59,18 @@ import com.cloudera.oryx.kafka.util.KafkaUtils;
  * @param <U> type of update/model read from update topic
  */
 @WebListener
-public final class ModelManagerListener<K,M,U> implements ServletContextListener {
+public final class ModelManagerListener<K,M,U> implements ServletContextListener, Closeable {
 
   private static final Logger log = LoggerFactory.getLogger(ModelManagerListener.class);
 
-  public static final String MANAGER_KEY = ModelManagerListener.class.getName() + ".ModelManager";
-  public static final String INPUT_PRODUCER_KEY =
-      ModelManagerListener.class.getName() + ".InputProducer";
+  static final String MANAGER_KEY = ModelManagerListener.class.getName() + ".ModelManager";
+  static final String INPUT_PRODUCER_KEY = ModelManagerListener.class.getName() + ".InputProducer";
 
   private Config config;
   private String updateTopic;
   private int maxMessageSize;
   private String updateTopicLockMaster;
+  private boolean readOnly;
   private String inputTopic;
   private String inputTopicLockMaster;
   private String inputTopicBroker;
@@ -82,16 +81,19 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
   private TopicProducer<K,M> inputProducer;
 
   @SuppressWarnings("unchecked")
-  public void init(ServletContext context) {
+  void init(ServletContext context) {
     String serializedConfig = context.getInitParameter(ConfigUtils.class.getName() + ".serialized");
     Objects.requireNonNull(serializedConfig);
     this.config = ConfigUtils.deserialize(serializedConfig);
     this.updateTopic = config.getString("oryx.update-topic.message.topic");
     this.maxMessageSize = config.getInt("oryx.update-topic.message.max-size");
     this.updateTopicLockMaster = config.getString("oryx.update-topic.lock.master");
-    this.inputTopic = config.getString("oryx.input-topic.message.topic");
-    this.inputTopicLockMaster = config.getString("oryx.input-topic.lock.master");
-    this.inputTopicBroker = config.getString("oryx.input-topic.broker");
+    this.readOnly = config.getBoolean("oryx.serving.api.read-only");
+    if (!readOnly) {
+      this.inputTopic = config.getString("oryx.input-topic.message.topic");
+      this.inputTopicLockMaster = config.getString("oryx.input-topic.lock.master");
+      this.inputTopicBroker = config.getString("oryx.input-topic.broker");
+    }
     this.modelManagerClassName = config.getString("oryx.serving.model-manager-class");
     this.updateDecoderClass = (Class<? extends Decoder<U>>) ClassUtils.loadClass(
         config.getString("oryx.update-topic.message.decoder-class"), Decoder.class);
@@ -104,13 +106,14 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
     ServletContext context = sce.getServletContext();
     init(context);
 
-    Preconditions.checkArgument(KafkaUtils.topicExists(inputTopicLockMaster, inputTopic),
+    if (!readOnly) {
+      Preconditions.checkArgument(KafkaUtils.topicExists(inputTopicLockMaster, inputTopic),
                                 "Topic %s does not exist; did you create it?", inputTopic);
-    Preconditions.checkArgument(KafkaUtils.topicExists(updateTopicLockMaster, updateTopic),
+      Preconditions.checkArgument(KafkaUtils.topicExists(updateTopicLockMaster, updateTopic),
                                 "Topic %s does not exist; did you create it?", updateTopic);
-
-    inputProducer = new TopicProducerImpl<>(inputTopicBroker, inputTopic);
-    context.setAttribute(INPUT_PRODUCER_KEY, inputProducer);
+      inputProducer = new TopicProducerImpl<>(inputTopicBroker, inputTopic);
+      context.setAttribute(INPUT_PRODUCER_KEY, inputProducer);
+    }
 
     consumer = Consumer.createJavaConsumerConnector(new ConsumerConfig(
         ConfigUtils.keyValueToProperties(
@@ -123,24 +126,23 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
     KafkaStream<String,U> stream =
         consumer.createMessageStreams(Collections.singletonMap(updateTopic, 1),
                                       new StringDecoder(null),
-                                      loadDecoderInstance())
-            .get(updateTopic).get(0);
-    final Iterator<KeyMessage<String,U>> transformed = Iterators.transform(stream.iterator(),
-        new Function<MessageAndMetadata<String,U>, KeyMessage<String,U>>() {
-          @Override
-          public KeyMessage<String,U> apply(MessageAndMetadata<String,U> input) {
-            return new KeyMessageImpl<>(input.key(), input.message());
-          }
-        });
+                                      loadDecoderInstance()).get(updateTopic).get(0);
+    Iterator<KeyMessage<String,U>> transformed = StreamSupport.stream(stream.spliterator(), false)
+        .map(input -> (KeyMessage<String,U>) new KeyMessageImpl<>(input.key(), input.message()))
+        .iterator();
 
     modelManager = loadManagerInstance();
-    new Thread(new LoggingRunnable() {
-      @Override
-      public void doRun() throws IOException {
-        // Can we do better than a default Hadoop config? Nothing else provides it here
+    new Thread(LoggingCallable.log(() -> {
+      // Can we do better than a default Hadoop config? Nothing else provides it here
+      try {
         modelManager.consume(transformed, new Configuration());
+      } catch (Throwable t) {
+        log.error("Error while consuming updates", t);
+        // Ideally we would shut down ServingLayer, but not clear how to plumb that through
+        // without assuming this has been run from ServingLayer and not a web app deployment
+        close();
       }
-    }, "OryxServingLayerUpdateConsumerThread").start();
+    }).asRunnable(), "OryxServingLayerUpdateConsumerThread").start();
 
     // Set the Model Manager in the Application scope
     context.setAttribute(MANAGER_KEY, modelManager);
@@ -149,10 +151,26 @@ public final class ModelManagerListener<K,M,U> implements ServletContextListener
   @Override
   public void contextDestroyed(ServletContextEvent sce) {
     log.info("ModelManagerListener destroying");
+    // Slightly paranoid; remove objects from app scope manually
+    ServletContext context = sce.getServletContext();
+    for (Enumeration<String> names = context.getAttributeNames(); names.hasMoreElements();) {
+      context.removeAttribute(names.nextElement());
+    }
 
-    // Remove the Model Manager from Application scope
-    sce.getServletContext().removeAttribute(MANAGER_KEY);
+    close();
 
+    // Hacky, but prevents Tomcat from complaining that ZK's cleanup thread 'leaked' since
+    // it has a short sleep at its end
+    try {
+      Thread.sleep(1000);
+    } catch (InterruptedException ie) {
+      // continue
+    }
+  }
+
+  @Override
+  public synchronized void close() {
+    log.info("ModelManagerListener closing");
     if (modelManager != null) {
       log.info("Shutting down model manager");
       modelManager.close();

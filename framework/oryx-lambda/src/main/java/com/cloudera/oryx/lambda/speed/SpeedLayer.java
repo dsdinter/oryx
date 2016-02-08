@@ -15,13 +15,11 @@
 
 package com.cloudera.oryx.lambda.speed;
 
-import java.io.IOException;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.stream.StreamSupport;
 
-import com.google.common.base.Function;
 import com.google.common.base.Preconditions;
-import com.google.common.collect.Iterators;
 import com.typesafe.config.Config;
 import kafka.consumer.Consumer;
 import kafka.consumer.ConsumerConfig;
@@ -36,13 +34,14 @@ import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.Tuple2;
 
 import com.cloudera.oryx.api.KeyMessage;
 import com.cloudera.oryx.api.KeyMessageImpl;
 import com.cloudera.oryx.api.speed.ScalaSpeedModelManager;
 import com.cloudera.oryx.api.speed.SpeedModelManager;
 import com.cloudera.oryx.common.lang.ClassUtils;
-import com.cloudera.oryx.common.lang.LoggingRunnable;
+import com.cloudera.oryx.common.lang.LoggingCallable;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.lambda.AbstractSparkLayer;
 import com.cloudera.oryx.lambda.UpdateOffsetsFn;
@@ -91,6 +90,7 @@ public final class SpeedLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     return "SpeedLayer";
   }
 
+  @SuppressWarnings("deprecation") // For foreachRDD deprecated in 1.6+
   public synchronized void start() {
     String id = getID();
     if (id != null) {
@@ -102,7 +102,7 @@ public final class SpeedLayer<K,M,U> extends AbstractSparkLayer<K,M> {
 
     JavaInputDStream<MessageAndMetadata<K,M>> dStream = buildInputDStream(streamingContext);
 
-    JavaPairDStream<K,M> pairDStream = dStream.mapToPair(new MMDToTuple2Fn<K,M>());
+    JavaPairDStream<K,M> pairDStream = dStream.mapToPair(km -> new Tuple2<>(km.key(), km.message()));
 
     consumer = Consumer.createJavaConsumerConnector(new ConsumerConfig(
         ConfigUtils.keyValueToProperties(
@@ -115,27 +115,24 @@ public final class SpeedLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     KafkaStream<String,U> stream =
         consumer.createMessageStreams(Collections.singletonMap(updateTopic, 1),
                                       new StringDecoder(null),
-                                      loadDecoderInstance())
-            .get(updateTopic).get(0);
-    final Iterator<KeyMessage<String,U>> transformed = Iterators.transform(stream.iterator(),
-        new Function<MessageAndMetadata<String,U>, KeyMessage<String,U>>() {
-          @Override
-          public KeyMessage<String,U> apply(MessageAndMetadata<String,U> input) {
-            return new KeyMessageImpl<>(input.key(), input.message());
-          }
-        });
+                                      loadDecoderInstance()).get(updateTopic).get(0);
+    Iterator<KeyMessage<String,U>> transformed = StreamSupport.stream(stream.spliterator(), false)
+        .map(input -> (KeyMessage<String,U>) new KeyMessageImpl<>(input.key(), input.message()))
+        .iterator();
 
     modelManager = loadManagerInstance();
-    new Thread(new LoggingRunnable() {
-      @Override
-      public void doRun() throws IOException {
+    new Thread(LoggingCallable.log(() -> {
+      try {
         modelManager.consume(transformed, streamingContext.sparkContext().hadoopConfiguration());
+      } catch (Throwable t) {
+        log.error("Error while consuming updates", t);
+        close();
       }
-    }, "OryxSpeedLayerUpdateConsumerThread").start();
+    }).asRunnable(), "OryxSpeedLayerUpdateConsumerThread").start();
 
     pairDStream.foreachRDD(new SpeedLayerUpdate<>(modelManager, updateBroker, updateTopic));
 
-    dStream.foreachRDD(new UpdateOffsetsFn<K,M>(getGroupID(), getInputTopicLockMaster()));
+    dStream.foreachRDD(new UpdateOffsetsFn<>(getGroupID(), getInputTopicLockMaster()));
 
     log.info("Starting Spark Streaming");
 

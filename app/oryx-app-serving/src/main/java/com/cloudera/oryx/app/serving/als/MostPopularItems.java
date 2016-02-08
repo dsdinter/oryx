@@ -17,6 +17,8 @@ package com.cloudera.oryx.app.serving.als;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.inject.Singleton;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -25,20 +27,13 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 
-import com.google.common.base.Function;
-import com.google.common.base.Predicate;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Ordering;
-
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
 import com.cloudera.oryx.app.als.RescorerProvider;
-import com.cloudera.oryx.app.serving.OryxServingException;
-import com.cloudera.oryx.common.collection.Pair;
-import com.cloudera.oryx.common.collection.PairComparators;
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
 import com.cloudera.oryx.app.serving.IDCount;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
+import com.cloudera.oryx.common.collection.Pair;
+import com.cloudera.oryx.common.collection.Pairs;
 
 /**
  * <p>Responds to a GET request to
@@ -57,7 +52,7 @@ import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
 public final class MostPopularItems extends AbstractALSResource {
 
   @GET
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public List<IDCount> get(@DefaultValue("10") @QueryParam("howMany") int howMany,
                            @DefaultValue("0") @QueryParam("offset") int offset,
                            @QueryParam("rescorerParams") List<String> rescorerParams)
@@ -74,38 +69,17 @@ public final class MostPopularItems extends AbstractALSResource {
   static List<IDCount> mapTopCountsToIDCounts(Map<String,Integer> counts,
                                               int howMany,
                                               int offset,
-                                              final Rescorer rescorer) {
-    Iterable<Pair<String,Integer>> countPairs = Iterables.transform(
-        counts.entrySet(),
-        new Function<Map.Entry<String,Integer>, Pair<String,Integer>>() {
-          @Override
-          public Pair<String,Integer> apply(Map.Entry<String,Integer> input) {
-            return new Pair<>(input.getKey(), input.getValue());
-          }
-        });
-
+                                              Rescorer rescorer) {
+    Stream<Pair<String,Integer>> countPairs =
+        counts.entrySet().stream().map(e -> new Pair<>(e.getKey(), e.getValue()));
     if (rescorer != null) {
-      countPairs = Iterables.filter(countPairs, new Predicate<Pair<String,Integer>>() {
-        @Override
-        public boolean apply(Pair<String, Integer> input) {
-          return !rescorer.isFiltered(input.getFirst());
-        }
-      });
+      countPairs = countPairs.filter(input -> !rescorer.isFiltered(input.getFirst()));
     }
-
-    List<Pair<String,Integer>> allTopCountPairs =
-        Ordering.from(PairComparators.<Integer>bySecond()).greatestOf(countPairs, howMany + offset);
-    List<Pair<String,Integer>> topCountPairs =
-        selectedSublist(allTopCountPairs, howMany, offset);
-
-    return Lists.transform(
-        topCountPairs,
-        new Function<Pair<String, Integer>, IDCount>() {
-          @Override
-          public IDCount apply(Pair<String,Integer> idCount) {
-            return new IDCount(idCount.getFirst(), idCount.getSecond());
-          }
-        });
+    return countPairs
+        .sorted(Pairs.orderBySecond(Pairs.SortOrder.DESCENDING))
+        .skip(offset).limit(howMany)
+        .map(idCount -> new IDCount(idCount.getFirst(), idCount.getSecond()))
+        .collect(Collectors.toList());
   }
 
 }

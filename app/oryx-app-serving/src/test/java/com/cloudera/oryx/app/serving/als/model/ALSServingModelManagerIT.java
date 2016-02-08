@@ -15,9 +15,9 @@
 
 package com.cloudera.oryx.app.serving.als.model;
 
+import com.cloudera.oryx.api.serving.OryxResource;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.lambda.serving.AbstractServingIT;
-import com.cloudera.oryx.app.serving.AbstractOryxResource;
 import com.cloudera.oryx.app.speed.als.MockALSModelUpdateGenerator;
 
 import com.typesafe.config.Config;
@@ -25,7 +25,6 @@ import org.junit.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -49,8 +48,7 @@ public final class ALSServingModelManagerIT extends AbstractServingIT {
     sleepSeconds(1);
 
     ALSServingModelManager manager = (ALSServingModelManager)
-        getServingLayer().getContext().getServletContext().getAttribute(
-            AbstractOryxResource.MODEL_MANAGER_KEY);
+        getServingLayer().getContext().getServletContext().getAttribute(OryxResource.MODEL_MANAGER_KEY);
 
     assertNotNull("Manager must initialize in web context", manager);
 
@@ -61,24 +59,13 @@ public final class ALSServingModelManagerIT extends AbstractServingIT {
     assertEquals(2, model.getFeatures());
     assertTrue(model.isImplicit());
 
-    Collection<String> expectedItems = MockALSModelUpdateGenerator.Y.keySet();
-    assertTrue(expectedItems.containsAll(model.getAllItemIDs()));
-    assertTrue(model.getAllItemIDs().containsAll(expectedItems));
+    assertContainsSame(MockALSModelUpdateGenerator.Y.keySet(), model.getAllItemIDs());
 
     assertNotNull(model.getYTYSolver());
 
-    for (Map.Entry<String,float[]> entry : MockALSModelUpdateGenerator.X.entrySet()) {
-      assertArrayEquals(entry.getValue(), model.getUserVector(entry.getKey()));
-    }
-    for (Map.Entry<String,float[]> entry : MockALSModelUpdateGenerator.Y.entrySet()) {
-      assertArrayEquals(entry.getValue(), model.getItemVector(entry.getKey()));
-    }
-    for (Map.Entry<String,Collection<String>> entry : MockALSModelUpdateGenerator.A.entrySet()) {
-      Collection<String> expected = entry.getValue();
-      Collection<String> actual = model.getKnownItems(entry.getKey());
-      assertTrue(expected.containsAll(actual));
-      assertTrue(actual.containsAll(expected));
-    }
+    MockALSModelUpdateGenerator.X.forEach((id, vector) -> assertArrayEquals(vector, model.getUserVector(id)));
+    MockALSModelUpdateGenerator.Y.forEach((id, vector) -> assertArrayEquals(vector, model.getItemVector(id)));
+    MockALSModelUpdateGenerator.A.forEach((id, expected) -> assertContainsSame(expected, model.getKnownItems(id)));
   }
 
 }

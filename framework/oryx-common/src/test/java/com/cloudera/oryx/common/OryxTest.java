@@ -20,8 +20,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Collection;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
-import com.google.common.base.Preconditions;
 import org.junit.After;
 import org.junit.Assert;
 import org.junit.Before;
@@ -72,8 +72,59 @@ public abstract class OryxTest extends Assert {
    * @param expected test's expected value
    * @param actual actual value
    */
-  protected static void assertEquals(float expected, float actual) {
+  public static void assertEquals(float expected, float actual) {
     assertEquals(expected, actual, FLOAT_EPSILON);
+  }
+
+  public static void assertGreater(double a, double b) {
+    Assert.assertTrue(a + " should be > " + b, a > b);
+  }
+
+  public static void assertGreaterOrEqual(double a, double b) {
+    Assert.assertTrue(a + " should be >= " + b, a >= b);
+  }
+
+  public static void assertLess(double a, double b) {
+    Assert.assertTrue(a + " should be < " + b, a < b);
+  }
+
+  public static void assertLessOrEqual(double a, double b) {
+    Assert.assertTrue(a + " should be <= " + b, a <= b);
+  }
+
+  public static void assertRange(double a, double min, double max) {
+    assertGreaterOrEqual(a, min);
+    assertLessOrEqual(a, max);
+  }
+
+  public static void assertRange(int a, int min, int max) {
+    Assert.assertTrue(a + " should be >= " + min, a >= min);
+    Assert.assertTrue(a + " should be <= " + max, a <= max);
+  }
+
+  public static void assertElementIndex(int i, int size) {
+    Assert.assertTrue(i + " should be >= 0", i >= 0);
+    Assert.assertTrue(i + " should be < " + size, i < size);
+  }
+
+  public static void assertNaN(double value) {
+    Assert.assertTrue(value + " is not NaN", Double.isNaN(value));
+  }
+
+  public static <T> void assertContains(Collection<T> collection, T value) {
+    assertTrue(abbreviatedToString(collection) + " should contain " + value, collection.contains(value));
+  }
+
+  public static void assertContains(String value, String target) {
+    assertTrue("'" + value + " should contain '" + target + "'", value.contains(target));
+  }
+
+  public static <T> void assertNotContains(Collection<T> collection, T value) {
+    assertFalse(abbreviatedToString(collection) + " should not contain " + value, collection.contains(value));
+  }
+
+  private static <T> String abbreviatedToString(Collection<T> c) {
+    return c.size() <= 16 ? c.toString() : c.stream().limit(16).collect(Collectors.toList()) + "...";
   }
 
   /**
@@ -88,26 +139,39 @@ public abstract class OryxTest extends Assert {
     assertEquals(expected, actual, DOUBLE_EPSILON);
   }
 
-  protected static void assertArrayEquals(float[] expecteds, float[] actuals) {
+  public static void assertArrayEquals(float[] expecteds, float[] actuals) {
     assertArrayEquals(expecteds, actuals, FLOAT_EPSILON);
   }
 
-  protected static void assertArrayEquals(double[] expecteds, double[] actuals) {
+  public static void assertArrayEquals(double[] expecteds, double[] actuals) {
     assertArrayEquals(expecteds, actuals, DOUBLE_EPSILON);
   }
 
-  protected static <T> void assertContainsSame(Collection<T> expected, Collection<T> actual) {
+  public static <T> void assertContainsSame(Collection<T> expected, Collection<T> actual) {
     if (expected == null) {
       assertNull(actual);
     } else {
       assertNotNull(actual);
       assertEquals(expected.size(), actual.size());
-      assertTrue(expected.containsAll(actual) && actual.containsAll(expected));
+      assertTrue(actual + " had unexpected values not in " + expected,
+                 expected.containsAll(actual));
+      assertTrue(actual + " was missing values in " + expected,
+                 actual.containsAll(expected));
     }
   }
 
-  protected static void sleepSeconds(int seconds) {
-    Preconditions.checkArgument(seconds >= 0);
+  public static void assertNonEmpty(Path p) throws IOException {
+    assertTrue("File should exist: " + p, Files.exists(p));
+    assertTrue("File should not be empty: " + p, Files.size(p) > 0);
+  }
+
+  public static <T> void assertInstanceOf(T value, Class<? extends T> clazz) {
+    assertTrue(value + " of type " + value.getClass() + " should be a " + clazz,
+               clazz.isAssignableFrom(value.getClass()));
+  }
+
+  public static void sleepSeconds(int seconds) {
+    assertTrue(seconds >= 0);
     if (seconds > 0) {
       try {
         Thread.sleep(TimeUnit.MILLISECONDS.convert(seconds, TimeUnit.SECONDS));

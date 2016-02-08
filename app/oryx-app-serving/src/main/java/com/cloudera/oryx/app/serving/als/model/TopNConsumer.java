@@ -15,16 +15,22 @@
 
 package com.cloudera.oryx.app.serving.als.model;
 
+import java.util.PriorityQueue;
 import java.util.Queue;
+import java.util.function.BiConsumer;
+import java.util.function.Predicate;
+import java.util.function.ToDoubleFunction;
+import java.util.stream.Stream;
 
-import net.openhft.koloboke.function.BiConsumer;
 import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
-import net.openhft.koloboke.function.Predicate;
-import net.openhft.koloboke.function.ToDoubleFunction;
 
 import com.cloudera.oryx.common.collection.Pair;
+import com.cloudera.oryx.common.collection.Pairs;
 
 final class TopNConsumer implements BiConsumer<String,float[]> {
+
+  private static final Predicate<String> ALWAYS_ALLOWED = key -> true;
+  private static final ObjDoubleToDoubleFunction<String> NO_RESCORE = (key, value) -> value;
 
   private final Queue<Pair<String, Double>> topN;
   private final int howMany;
@@ -33,65 +39,42 @@ final class TopNConsumer implements BiConsumer<String,float[]> {
   private final Predicate<String> allowedPredicate;
   /** Local copy of lower bound of min score in the priority queue, to avoid polling. */
   private double topScoreLowerBound;
-  /** Local flag that avoids checking queue size each time. */
-  private boolean full;
 
-  TopNConsumer(Queue<Pair<String, Double>> topN,
-               int howMany,
+  TopNConsumer(int howMany,
                ToDoubleFunction<float[]> scoreFn,
                ObjDoubleToDoubleFunction<String> rescoreFn,
                Predicate<String> allowedPredicate) {
-    this.topN = topN;
+    this.topN = new PriorityQueue<>(howMany, Pairs.orderBySecond(Pairs.SortOrder.ASCENDING));
     this.howMany = howMany;
     this.scoreFn = scoreFn;
-    this.rescoreFn = rescoreFn;
-    this.allowedPredicate = allowedPredicate;
+    this.rescoreFn = rescoreFn == null ? NO_RESCORE : rescoreFn;
+    this.allowedPredicate = allowedPredicate == null ? ALWAYS_ALLOWED : allowedPredicate;
     topScoreLowerBound = Double.NEGATIVE_INFINITY;
-    full = false;
   }
 
   @Override
   public void accept(String key, float[] value) {
-    if (allowedPredicate == null || allowedPredicate.test(key)) {
-      double score = scoreFn.applyAsDouble(value);
-      if (rescoreFn != null) {
-        score = rescoreFn.applyAsDouble(key, score);
-      }
-      // If queue is already of minimum size,
-      if (full) {
-        // ... then go straight to seeing if it should be updated
-        // Only proceed if score exceeds a lower bound on minimum score in the queue.
-        // Might still not be big enough if another thread has put higher values in the
-        // queue.
-        if (score > topScoreLowerBound) {
-          double peek;
-          synchronized (topN) {
-            peek = topN.peek().getSecond();
-            if (score > peek) {
-              // Remove least of the top elements
-              topN.poll();
-              // Add new element
-              topN.add(new Pair<>(key, score));
-            }
+    if (allowedPredicate.test(key)) {
+      double score = rescoreFn.applyAsDouble(key, scoreFn.applyAsDouble(value));
+      // Only proceed if score can possibly exceed (cached) minimum score in the queue.
+      if (score > topScoreLowerBound) {
+        // If full,
+        if (topN.size() >= howMany) {
+          // Must double-check against next value because new one may still not be bigger
+          if (score > (topScoreLowerBound = topN.peek().getSecond())) {
+            // Swap in new, larger value for old smallest one
+            topN.poll();
+            topN.add(new Pair<>(key, score));
           }
-          if (peek > topScoreLowerBound) {
-            // Update lower bound on what's big enough to go in the queue
-            topScoreLowerBound = peek;
-          }
-        }
-      } else {
-        // Otherwise always add the new element
-        int newSize;
-        synchronized (topN) {
+        } else {
           topN.add(new Pair<>(key, score));
-          newSize = topN.size();
-        }
-        if (newSize >= howMany) {
-          // Remember the queue is already full enough, to avoid checking the queue again
-          full = true;
         }
       }
     }
+  }
+
+  Stream<Pair<String,Double>> getTopN() {
+    return topN.stream();
   }
 
 }

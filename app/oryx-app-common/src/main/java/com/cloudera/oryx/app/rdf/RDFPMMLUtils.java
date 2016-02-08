@@ -19,6 +19,7 @@ import java.util.BitSet;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import com.google.common.base.Preconditions;
 import org.dmg.pmml.DataDictionary;
@@ -39,13 +40,13 @@ import org.dmg.pmml.SimpleSetPredicate;
 import org.dmg.pmml.TreeModel;
 import org.dmg.pmml.True;
 
+import com.cloudera.oryx.app.classreg.predict.CategoricalPrediction;
+import com.cloudera.oryx.app.classreg.predict.NumericPrediction;
+import com.cloudera.oryx.app.classreg.predict.Prediction;
 import com.cloudera.oryx.app.pmml.AppPMMLUtils;
 import com.cloudera.oryx.app.rdf.decision.CategoricalDecision;
 import com.cloudera.oryx.app.rdf.decision.Decision;
 import com.cloudera.oryx.app.rdf.decision.NumericDecision;
-import com.cloudera.oryx.app.rdf.predict.CategoricalPrediction;
-import com.cloudera.oryx.app.rdf.predict.NumericPrediction;
-import com.cloudera.oryx.app.rdf.predict.Prediction;
 import com.cloudera.oryx.app.rdf.tree.DecisionForest;
 import com.cloudera.oryx.app.rdf.tree.DecisionNode;
 import com.cloudera.oryx.app.rdf.tree.DecisionTree;
@@ -96,15 +97,15 @@ public final class RDFPMMLUtils {
     Preconditions.checkArgument(schema.getFeatureNames().equals(
         AppPMMLUtils.getFeatureNames(miningSchema)));
 
+    Integer pmmlIndex = AppPMMLUtils.findTargetIndex(miningSchema);
     if (schema.hasTarget()) {
       int schemaIndex = schema.getTargetFeatureIndex();
-      int pmmlIndex = AppPMMLUtils.findTargetIndex(miningSchema);
       Preconditions.checkArgument(
-          schemaIndex == pmmlIndex,
+          pmmlIndex != null && schemaIndex == pmmlIndex,
           "Configured schema expects target at index %s, but PMML has target at index %s",
           schemaIndex, pmmlIndex);
     } else {
-      Preconditions.checkArgument(AppPMMLUtils.findTargetIndex(miningSchema) == null);
+      Preconditions.checkArgument(pmmlIndex == null);
     }
   }
 
@@ -122,7 +123,7 @@ public final class RDFPMMLUtils {
     List<Model> models = pmml.getModels();
     Model model = models.get(0);
     MiningSchema miningSchema = model.getMiningSchema();
-    int targetIndex = AppPMMLUtils.findTargetIndex(miningSchema);
+    int targetIndex = Objects.requireNonNull(AppPMMLUtils.findTargetIndex(miningSchema));
 
     DecisionTree[] trees;
     double[] weights;
@@ -188,10 +189,10 @@ public final class RDFPMMLUtils {
         // Categorical target
         Map<String,Integer> targetEncoding =
             categoricalValueEncodings.getValueEncodingMap(targetIndex);
-        int[] categoryCounts = new int[targetEncoding.size()];
+        double[] categoryCounts = new double[targetEncoding.size()];
         for (ScoreDistribution dist : scoreDistributions) {
           int encoding = targetEncoding.get(dist.getValue());
-          categoryCounts[encoding] = (int) Math.round(dist.getRecordCount());
+          categoryCounts[encoding] = dist.getRecordCount();
         }
         prediction = new CategoricalPrediction(categoryCounts);
       } else {
@@ -255,9 +256,7 @@ public final class RDFPMMLUtils {
         }
       } else {
         // "not in"
-        for (int encoding : valueEncodingMap.values()) {
-          activeCategories.set(encoding);
-        }
+        valueEncodingMap.values().forEach(activeCategories::set);
         for (String category : categories) {
           activeCategories.clear(valueEncodingMap.get(category));
         }

@@ -18,16 +18,17 @@ package com.cloudera.oryx.app.speed.kmeans;
 import java.io.Serializable;
 import java.util.List;
 
+import com.cloudera.oryx.api.speed.SpeedModel;
 import com.cloudera.oryx.app.kmeans.ClusterInfo;
 import com.cloudera.oryx.app.kmeans.DistanceFn;
 import com.cloudera.oryx.app.kmeans.KMeansUtils;
-import com.cloudera.oryx.app.kmeans.SquaredDistanceFn;
+import com.cloudera.oryx.app.kmeans.EuclideanDistanceFn;
 
 /**
  * Contains all data structures needed to create near-real-time updates for a
  * k-means clustering model.
  */
-public final class KMeansSpeedModel implements Serializable {
+public final class KMeansSpeedModel implements SpeedModel, Serializable {
 
   private final List<ClusterInfo> clusters;
   private final DistanceFn<double[]> distanceFn;
@@ -35,7 +36,7 @@ public final class KMeansSpeedModel implements Serializable {
   public KMeansSpeedModel(List<ClusterInfo> clusters) {
     KMeansUtils.checkUniqueIDs(clusters);
     this.clusters = clusters;
-    distanceFn = new SquaredDistanceFn(); // For now, this is the only thing supported
+    distanceFn = new EuclideanDistanceFn(); // For now, this is the only thing supported
   }
 
   public ClusterInfo getCluster(int id) {
@@ -48,6 +49,11 @@ public final class KMeansSpeedModel implements Serializable {
 
   public ClusterInfo closestCluster(double[] vector) {
     return KMeansUtils.closestCluster(clusters, distanceFn, vector).getFirst();
+  }
+
+  @Override
+  public float getFractionLoaded() {
+    return 1.0f;
   }
 
   @Override

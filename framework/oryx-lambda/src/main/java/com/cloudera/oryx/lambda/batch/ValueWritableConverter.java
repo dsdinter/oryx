@@ -18,10 +18,12 @@ package com.cloudera.oryx.lambda.batch;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
+import com.google.common.base.Preconditions;
 import org.apache.hadoop.io.Writable;
 
 /**
@@ -46,7 +48,6 @@ final class ValueWritableConverter<V> {
 
   private final Method fromWritableMethod;
   private final Constructor<? extends Writable> writableConstructor;
-  private final Constructor<? extends Writable> writableNoArgConstructor;
 
   /**
    * @param valueClass underlying value class, like {@link String} or {@link Integer}
@@ -56,17 +57,13 @@ final class ValueWritableConverter<V> {
    *  with a single argument whose type is the value class, and a no-arg constructor.
    */
   <W extends Writable> ValueWritableConverter(Class<V> valueClass, Class<W> writableClass) {
-    Method fromWritableMethod = null;
-    for (Method method : writableClass.getMethods()) {
-      if (method.getName().startsWith("get")) {
-        Class<?> returnType = method.getReturnType();
-        if (returnType.equals(valueClass) ||
-            returnType.equals(WRAPPER_TO_PRIMITIVE.get(valueClass))) {
-          fromWritableMethod = method;
-          break;
-        }
-      }
-    }
+    Method fromWritableMethod = Arrays.stream(writableClass.getMethods()).
+        filter(method -> method.getName().startsWith("get")).
+        filter(method -> {
+          Class<?> returnType = method.getReturnType();
+          return returnType.equals(valueClass) || returnType.equals(WRAPPER_TO_PRIMITIVE.get(valueClass));
+        }).findFirst().orElse(null);
+
     if (fromWritableMethod == null && String.class.equals(valueClass)) {
       // Special-case String
       try {
@@ -75,35 +72,19 @@ final class ValueWritableConverter<V> {
         throw new IllegalArgumentException(e);
       }
     }
-    Objects.requireNonNull(fromWritableMethod,
-                           writableClass + " has no method returning " + valueClass);
+    Preconditions.checkArgument(fromWritableMethod != null,
+                                writableClass + " has no method returning " + valueClass);
     this.fromWritableMethod = fromWritableMethod;
 
-    Constructor<W> theNoArgConstructor = null;
-    Constructor<W> theOneArgConstructor = null;
     @SuppressWarnings("unchecked")
     Constructor<W>[] constructors = (Constructor<W>[]) writableClass.getConstructors();
-    for (Constructor<W> constructor : constructors) {
-      Class<?>[] parameterTypes = constructor.getParameterTypes();
-      if (parameterTypes.length == 0) {
-        theNoArgConstructor = constructor;
-      } else if (parameterTypes.length == 1) {
-        Class<?> paramType = parameterTypes[0];
-        if (paramType.equals(valueClass) ||
-            paramType.equals(WRAPPER_TO_PRIMITIVE.get(valueClass))) {
-          theOneArgConstructor = constructor;
-        }
-      }
-      if (theNoArgConstructor != null && theOneArgConstructor != null) {
-        break;
-      }
-    }
-
-    Objects.requireNonNull(theNoArgConstructor, writableClass + " has no no-arg constructor");
-    Objects.requireNonNull(theOneArgConstructor,
-                           writableClass + " has no constructor accepting " + valueClass);
-    writableNoArgConstructor =theNoArgConstructor;
-    writableConstructor = theOneArgConstructor;
+    writableConstructor = Arrays.stream(constructors).
+      filter(constructor -> constructor.getParameterTypes().length == 1).
+      filter(constructor -> {
+        Class<?> paramType = constructor.getParameterTypes()[0];
+        return paramType.equals(valueClass) || paramType.equals(WRAPPER_TO_PRIMITIVE.get(valueClass));
+      }).findFirst().orElse(null);
+    Objects.requireNonNull(writableConstructor, writableClass + " has no constructor accepting " + valueClass);
   }
 
   V fromWritable(Writable writable) {
@@ -117,12 +98,9 @@ final class ValueWritableConverter<V> {
   }
 
   Writable toWritable(V value) {
+    Objects.requireNonNull(value);
     try {
-      if (value == null) {
-        return writableNoArgConstructor.newInstance();
-      } else {
-        return writableConstructor.newInstance(value);
-      }
+      return writableConstructor.newInstance(value);
     } catch (InstantiationException | IllegalAccessException | InvocationTargetException e) {
       throw new IllegalStateException(e);
     }

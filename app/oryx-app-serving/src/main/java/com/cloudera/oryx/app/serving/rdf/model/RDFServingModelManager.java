@@ -21,7 +21,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.typesafe.config.Config;
 import org.apache.hadoop.conf.Configuration;
 import org.dmg.pmml.PMML;
@@ -29,32 +28,31 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.cloudera.oryx.api.KeyMessage;
-import com.cloudera.oryx.api.serving.ServingModelManager;
+import com.cloudera.oryx.api.serving.AbstractServingModelManager;
+import com.cloudera.oryx.app.classreg.predict.CategoricalPrediction;
+import com.cloudera.oryx.app.classreg.predict.NumericPrediction;
 import com.cloudera.oryx.app.pmml.AppPMMLUtils;
 import com.cloudera.oryx.app.rdf.RDFPMMLUtils;
-import com.cloudera.oryx.app.rdf.predict.CategoricalPrediction;
-import com.cloudera.oryx.app.rdf.predict.NumericPrediction;
 import com.cloudera.oryx.app.rdf.tree.DecisionForest;
 import com.cloudera.oryx.app.rdf.tree.TerminalNode;
 import com.cloudera.oryx.app.schema.CategoricalValueEncodings;
 import com.cloudera.oryx.app.schema.InputSchema;
 import com.cloudera.oryx.common.collection.Pair;
+import com.cloudera.oryx.common.text.TextUtils;
 
 /**
- * A {@link ServingModelManager} that manages and provides access to an {@link RDFServingModel}
- * for the random decision forest Serving Layer application.
+ * A {@link com.cloudera.oryx.api.serving.ServingModelManager} that manages and provides access to an
+ * {@link RDFServingModel} for the random decision forest Serving Layer application.
  */
-public final class RDFServingModelManager implements ServingModelManager<String> {
+public final class RDFServingModelManager extends AbstractServingModelManager<String> {
 
   private static final Logger log = LoggerFactory.getLogger(RDFServingModelManager.class);
-  private static final ObjectMapper MAPPER = new ObjectMapper();
 
-  private final Config config;
   private final InputSchema inputSchema;
   private RDFServingModel model;
 
   public RDFServingModelManager(Config config) {
-    this.config = config;
+    super(config);
     inputSchema = new InputSchema(config);
   }
 
@@ -72,9 +70,8 @@ public final class RDFServingModelManager implements ServingModelManager<String>
       throws IOException {
     while (updateIterator.hasNext()) {
       KeyMessage<String, String> km = updateIterator.next();
-      String key = km.getKey();
+      String key = Objects.requireNonNull(km.getKey(), "Bad message: " + km);
       String message = km.getMessage();
-      Objects.requireNonNull(key, "Bad message: " + km);
       switch (key) {
         case "UP":
           if (model == null) {
@@ -82,7 +79,7 @@ public final class RDFServingModelManager implements ServingModelManager<String>
           }
 
           DecisionForest forest = model.getForest();
-          List<?> update = MAPPER.readValue(message, List.class);
+          List<?> update = TextUtils.readJSON(message, List.class);
           int treeID = Integer.parseInt(update.get(0).toString());
           String nodeID = update.get(1).toString();
 
@@ -91,12 +88,8 @@ public final class RDFServingModelManager implements ServingModelManager<String>
             CategoricalPrediction predictionToUpdate =
                 (CategoricalPrediction) nodeToUpdate.getPrediction();
             @SuppressWarnings("unchecked")
-            Map<Integer,Integer> counts = (Map<Integer,Integer>) update.get(2);
-            for (Map.Entry<?,?> entry : counts.entrySet()) {
-              int encoding = Integer.parseInt(entry.getKey().toString());
-              int count = Integer.parseInt(entry.getValue().toString());
-              predictionToUpdate.update(encoding, count);
-            }
+            Map<String,Integer> counts = (Map<String,Integer>) update.get(2); // JSON map keys are always Strings
+            counts.forEach((encoding, count) -> predictionToUpdate.update(Integer.parseInt(encoding), count));
           } else {
             TerminalNode nodeToUpdate = (TerminalNode) forest.getTrees()[treeID].findByID(nodeID);
             NumericPrediction predictionToUpdate = (NumericPrediction) nodeToUpdate.getPrediction();
@@ -128,18 +121,8 @@ public final class RDFServingModelManager implements ServingModelManager<String>
   }
 
   @Override
-  public Config getConfig() {
-    return config;
-  }
-
-  @Override
   public RDFServingModel getModel() {
     return model;
-  }
-
-  @Override
-  public void close() {
-    // do nothing
   }
 
 }

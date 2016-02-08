@@ -26,20 +26,21 @@ import javax.ws.rs.core.MediaType;
 import com.typesafe.config.Config;
 import org.junit.Assert;
 
-import com.cloudera.oryx.app.serving.AbstractOryxResource;
+import com.cloudera.oryx.api.serving.OryxResource;
 import com.cloudera.oryx.app.serving.IDCount;
 import com.cloudera.oryx.app.serving.IDValue;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
 import com.cloudera.oryx.app.serving.als.model.TestALSModelFactory;
+import com.cloudera.oryx.common.OryxTest;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.lambda.serving.AbstractServingTest;
 import com.cloudera.oryx.lambda.serving.MockTopicProducer;
 
 public abstract class AbstractALSServingTest extends AbstractServingTest {
 
-  protected static final GenericType<List<IDValue>> LIST_ID_VALUE_TYPE =
+  static final GenericType<List<IDValue>> LIST_ID_VALUE_TYPE =
       new GenericType<List<IDValue>>() {};
-  protected static final GenericType<List<IDCount>> LIST_ID_COUNT_TYPE =
+  static final GenericType<List<IDCount>> LIST_ID_COUNT_TYPE =
       new GenericType<List<IDCount>>() {};
 
   @Override
@@ -56,16 +57,16 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
     @Override
     public final void contextInitialized(ServletContextEvent sce) {
       ServletContext context = sce.getServletContext();
-      context.setAttribute(AbstractOryxResource.MODEL_MANAGER_KEY, getModelManager());
-      context.setAttribute(AbstractOryxResource.INPUT_PRODUCER_KEY, new MockTopicProducer());
+      context.setAttribute(OryxResource.MODEL_MANAGER_KEY, getModelManager());
+      context.setAttribute(OryxResource.INPUT_PRODUCER_KEY, new MockTopicProducer());
     }
-    protected MockServingModelManager getModelManager() {
+    MockServingModelManager getModelManager() {
       return new MockServingModelManager(ConfigUtils.getDefault());
     }
   }
 
-  protected static class MockServingModelManager extends AbstractMockServingModelManager {
-    public MockServingModelManager(Config config) {
+  static class MockServingModelManager extends AbstractMockServingModelManager {
+    MockServingModelManager(Config config) {
       super(config);
     }
     @Override
@@ -74,7 +75,7 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
     }
   }
 
-  protected final void testOffset(String requestPath, int howMany, int offset, int expectedSize) {
+  final void testOffset(String requestPath, int howMany, int offset, int expectedSize) {
     List<?> results = target(requestPath)
         .queryParam("howMany", Integer.toString(howMany))
         .queryParam("offset", Integer.toString(offset))
@@ -84,7 +85,7 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
     Assert.assertEquals(expectedSize, results.size());
   }
 
-  protected final void testHowMany(String requestPath, int howMany, int expectedSize) {
+  final void testHowMany(String requestPath, int howMany, int expectedSize) {
     List<?> results = target(requestPath)
         .queryParam("howMany", Integer.toString(howMany))
         .request()
@@ -93,9 +94,7 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
     Assert.assertEquals(expectedSize, results.size());
   }
 
-  protected static void testTopByValue(int expectedSize,
-                                       List<IDValue> values,
-                                       boolean reverse) {
+  static void testTopByValue(int expectedSize, List<IDValue> values, boolean reverse) {
     Assert.assertEquals(expectedSize, values.size());
     for (int i = 0; i < values.size(); i++) {
       IDValue value = values.get(i);
@@ -105,34 +104,34 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
       if (i > 0) {
         double lastScore = values.get(i-1).getValue();
         if (reverse) {
-          Assert.assertTrue(lastScore <= thisScore);
+          OryxTest.assertLessOrEqual(lastScore, thisScore);
         } else {
-          Assert.assertTrue(lastScore >= thisScore);
+          OryxTest.assertGreaterOrEqual(lastScore, thisScore);
         }
       }
     }
   }
 
-  protected static void testTopCount(int expectedSize, List<IDCount> top) {
+  static void testTopCount(int expectedSize, List<IDCount> top) {
     Assert.assertEquals(expectedSize, top.size());
     for (int i = 0; i < top.size(); i++) {
       int thisCount = top.get(i).getCount();
-      Assert.assertTrue(thisCount >= 1);
+      OryxTest.assertGreaterOrEqual(thisCount, 1);
       if (i > 0) {
-        Assert.assertTrue(top.get(i - 1).getCount() >= thisCount);
+        OryxTest.assertGreaterOrEqual(top.get(i - 1).getCount(), thisCount);
       }
     }
   }
 
-  protected static void testCSVTopByScore(int expectedSize, String response) {
+  static void testCSVTopByScore(int expectedSize, String response) {
     testCSVTop(expectedSize, response, false, false);
   }
 
-  protected static void testCSVLeastByScore(int expectedSize, String response) {
+  static void testCSVLeastByScore(int expectedSize, String response) {
     testCSVTop(expectedSize, response, false, true);
   }
 
-  protected static void testCSVTopByCount(int expectedSize, String response) {
+  static void testCSVTopByCount(int expectedSize, String response) {
     testCSVTop(expectedSize, response, true, false);
   }
 
@@ -147,7 +146,7 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
       String[] tokens = row.split(",");
       if (counts) {
         int count = Integer.parseInt(tokens[1]);
-        Assert.assertTrue(count > 0);
+        OryxTest.assertGreater(count, 0);
       }
       double thisScore = Double.parseDouble(tokens[1]);
       Assert.assertFalse(Double.isNaN(thisScore));
@@ -155,15 +154,15 @@ public abstract class AbstractALSServingTest extends AbstractServingTest {
       if (i > 0) {
         double lastScore = Double.parseDouble(rows[i-1].split(",")[1]);
         if (reverse) {
-          Assert.assertTrue(lastScore <= thisScore);
+          OryxTest.assertLessOrEqual(lastScore, thisScore);
         } else {
-          Assert.assertTrue(lastScore >= thisScore);
+          OryxTest.assertGreaterOrEqual(lastScore, thisScore);
         }
       }
     }
   }
 
-  protected static void testCSVScores(int expectedSize, String response) {
+  static void testCSVScores(int expectedSize, String response) {
     String[] rows = response.split("\n");
     Assert.assertEquals(expectedSize, rows.length);
     for (String row : rows) {

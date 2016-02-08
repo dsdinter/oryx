@@ -17,6 +17,8 @@ package com.cloudera.oryx.app.serving.als.model;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.commons.math3.distribution.PoissonDistribution;
 import org.apache.commons.math3.random.RandomGenerator;
@@ -24,6 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.cloudera.oryx.app.serving.als.TestALSRescorerProvider;
+import com.cloudera.oryx.common.lang.ExecUtils;
 import com.cloudera.oryx.common.lang.JVMUtils;
 import com.cloudera.oryx.common.math.VectorMath;
 import com.cloudera.oryx.common.random.RandomManager;
@@ -39,7 +42,7 @@ public final class LoadTestALSModelFactory {
   public static final int WORKERS =
       Integer.parseInt(System.getProperty("oryx.test.als.benchmark.workers", "4"));
   public static final int REQS_PER_WORKER =
-      Integer.parseInt(System.getProperty("oryx.test.als.benchmark.reqsPerWorker", "100"));
+      Integer.parseInt(System.getProperty("oryx.test.als.benchmark.reqsPerWorker", "1000"));
   private static final int FEATURES =
       Integer.parseInt(System.getProperty("oryx.test.als.benchmark.features", "100"));
   private static final int AVG_ITEMS_PER_USER =
@@ -56,32 +59,40 @@ public final class LoadTestALSModelFactory {
     System.gc();
     long startMemory = JVMUtils.getUsedMemory();
 
-    RandomGenerator random = RandomManager.getRandom();
-    PoissonDistribution itemPerUserDist = new PoissonDistribution(
-        random,
-        AVG_ITEMS_PER_USER,
-        PoissonDistribution.DEFAULT_EPSILON,
-        PoissonDistribution.DEFAULT_MAX_ITERATIONS);
     ALSServingModel model = new ALSServingModel(FEATURES, true, LSH_SAMPLE_RATE, new TestALSRescorerProvider());
+    AtomicLong totalEntries = new AtomicLong();
 
+    int numCores = Runtime.getRuntime().availableProcessors();
     log.info("Adding {} users", USERS);
-    long totalEntries = 0;
-    for (int user = 0; user < USERS; user++) {
-      String userID = "U" + user;
-      model.setUserVector(userID, VectorMath.randomVectorF(FEATURES, random));
-      int itemsPerUser = itemPerUserDist.sample();
-      totalEntries += itemsPerUser;
-      Collection<String> knownIDs = new ArrayList<>(itemsPerUser);
-      for (int i = 0; i < itemsPerUser; i++) {
-        knownIDs.add("I" + random.nextInt(ITEMS));
+    AtomicInteger userCount = new AtomicInteger();
+    ExecUtils.doInParallel(numCores, i -> {
+      RandomGenerator random = RandomManager.getRandom(((long) i << 32) ^ System.nanoTime());
+      PoissonDistribution itemPerUserDist = new PoissonDistribution(
+          random,
+          AVG_ITEMS_PER_USER,
+          PoissonDistribution.DEFAULT_EPSILON,
+          PoissonDistribution.DEFAULT_MAX_ITERATIONS);
+      for (int user = userCount.getAndIncrement(); user < USERS; user = userCount.getAndIncrement()) {
+        String userID = "U" + user;
+        model.setUserVector(userID, VectorMath.randomVectorF(FEATURES, random));
+        int itemsPerUser = itemPerUserDist.sample();
+        totalEntries.addAndGet(itemsPerUser);
+        Collection<String> knownIDs = new ArrayList<>(itemsPerUser);
+        for (int item = 0; item < itemsPerUser; item++) {
+          knownIDs.add("I" + random.nextInt(ITEMS));
+        }
+        model.addKnownItems(userID, knownIDs);
       }
-      model.addKnownItems(userID, knownIDs);
-    }
+    });
 
     log.info("Adding {} items", ITEMS);
-    for (int item = 0; item < ITEMS; item++) {
-      model.setItemVector("I" + item, VectorMath.randomVectorF(FEATURES, random));
-    }
+    AtomicInteger itemCount = new AtomicInteger();
+    ExecUtils.doInParallel(numCores, i -> {
+      RandomGenerator random = RandomManager.getRandom(((long) i << 32) ^ System.nanoTime());
+      for (int item = itemCount.getAndIncrement(); item < ITEMS; item = itemCount.getAndIncrement()) {
+        model.setItemVector("I" + item, VectorMath.randomVectorF(FEATURES, random));
+      }
+    });
 
     System.gc();
     long endMemory = JVMUtils.getUsedMemory();

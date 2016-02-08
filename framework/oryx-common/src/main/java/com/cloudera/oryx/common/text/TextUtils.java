@@ -22,10 +22,10 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.StreamSupport;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.common.collect.Iterators;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVPrinter;
@@ -75,16 +75,13 @@ public final class TextUtils {
   }
 
   private static String[] doParseDelimited(String delimited, CSVFormat format) {
-    Iterator<CSVRecord> records;
-    try {
-      records = CSVParser.parse(delimited, format).iterator();
+    try (CSVParser parser = CSVParser.parse(delimited, format)) {
+      Iterator<CSVRecord> records = parser.iterator();
+      return records.hasNext() ?
+          StreamSupport.stream(records.next().spliterator(), false).toArray(String[]::new) :
+          EMPTY_STRING;
     } catch (IOException e) {
       throw new IllegalStateException(e); // Can't happen
-    }
-    if (records.hasNext()) {
-      return Iterators.toArray(records.next().iterator(), String.class);
-    } else {
-      return EMPTY_STRING;
     }
   }
 
@@ -162,6 +159,31 @@ public final class TextUtils {
     } catch (JsonProcessingException e) {
       throw new IllegalArgumentException(e);
     }
+  }
+
+  /**
+   * @param json JSON string
+   * @param clazz Java type to interpret as
+   * @param <T> type that should be parsed from JSON and returned
+   * @return the JSON string, parsed into the given type
+   */
+  public static <T> T readJSON(String json, Class<T> clazz) {
+    try {
+      return MAPPER.readValue(json, clazz);
+    } catch (IOException e) {
+      throw new IllegalStateException(e);
+    }
+  }
+
+  /**
+   * @param value value to convert
+   * @param clazz desired type to interpret as
+   * @param <T> type that should be parsed from JSON and returned
+   * @return the given value, reinterpreted as the given type, as if serialized/deserialized
+   *  via JSON to perform the conversion
+   */
+  public static <T> T convertViaJSON(Object value, Class<T> clazz) {
+    return MAPPER.convertValue(value, clazz);
   }
 
 }

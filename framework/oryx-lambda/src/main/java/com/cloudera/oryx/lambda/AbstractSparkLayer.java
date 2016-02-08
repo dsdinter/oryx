@@ -17,13 +17,13 @@ package com.cloudera.oryx.lambda;
 
 import java.io.Closeable;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 import com.google.common.base.Preconditions;
 import com.typesafe.config.Config;
@@ -31,8 +31,8 @@ import kafka.common.TopicAndPartition;
 import kafka.message.MessageAndMetadata;
 import kafka.serializer.Decoder;
 import org.apache.spark.SparkConf;
+import org.apache.spark.SparkContext;
 import org.apache.spark.api.java.JavaSparkContext;
-import org.apache.spark.api.java.function.PairFunction;
 import org.apache.spark.streaming.Duration;
 import org.apache.spark.streaming.api.java.JavaInputDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
@@ -40,7 +40,6 @@ import org.apache.spark.streaming.kafka.KafkaCluster;
 import org.apache.spark.streaming.kafka.KafkaUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import scala.Tuple2;
 import scala.collection.JavaConversions;
 
 import com.cloudera.oryx.common.lang.ClassUtils;
@@ -71,13 +70,8 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
   private final Class<M> messageClass;
   private final Class<? extends Decoder<K>> keyDecoderClass;
   private final Class<? extends Decoder<M>> messageDecoderClass;
-  private final int numExecutors;
-  private final int executorCores;
-  private final String executorMemoryString;
-  //private final String driverMemoryString;
-  private final boolean useDynamicAllocation;
   private final int generationIntervalSec;
-  private final int uiPort;
+  private final Map<String,Object> extraSparkConfig;
 
   @SuppressWarnings("unchecked")
   protected AbstractSparkLayer(Config config) {
@@ -92,8 +86,8 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
     this.inputTopic = config.getString("oryx.input-topic.message.topic");
     this.inputTopicLockMaster = config.getString("oryx.input-topic.lock.master");
     this.inputBroker = config.getString("oryx.input-topic.broker");
-    this.updateTopic = config.getString("oryx.update-topic.message.topic");
-    this.updateTopicLockMaster = config.getString("oryx.update-topic.lock.master");
+    this.updateTopic = ConfigUtils.getOptionalString(config, "oryx.update-topic.message.topic");
+    this.updateTopicLockMaster = ConfigUtils.getOptionalString(config, "oryx.update-topic.lock.master");
     this.keyClass = ClassUtils.loadClass(config.getString("oryx.input-topic.message.key-class"));
     this.messageClass =
         ClassUtils.loadClass(config.getString("oryx.input-topic.message.message-class"));
@@ -101,19 +95,14 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
         config.getString("oryx.input-topic.message.key-decoder-class"), Decoder.class);
     this.messageDecoderClass = (Class<? extends Decoder<M>>) ClassUtils.loadClass(
         config.getString("oryx.input-topic.message.message-decoder-class"), Decoder.class);
-    this.numExecutors = config.getInt("oryx." + group + ".streaming.num-executors");
-    this.executorCores = config.getInt("oryx." + group + ".streaming.executor-cores");
-    this.executorMemoryString = config.getString("oryx." + group + ".streaming.executor-memory");
-    //this.driverMemoryString = config.getString("oryx." + group + ".streaming.driver-memory");
-    this.useDynamicAllocation = config.getBoolean("oryx." + group + ".streaming.dynamic-allocation");
-    this.generationIntervalSec =
-        config.getInt("oryx." + group + ".streaming.generation-interval-sec");
-    this.uiPort = config.getInt("oryx." + group + ".ui.port");
+    this.generationIntervalSec = config.getInt("oryx." + group + ".streaming.generation-interval-sec");
 
-    Preconditions.checkArgument(numExecutors >= 1);
-    Preconditions.checkArgument(executorCores >= 1);
+    this.extraSparkConfig = new HashMap<>();
+    config.getConfig("oryx." + group + ".streaming.config").entrySet().forEach(e ->
+      extraSparkConfig.put(e.getKey(), e.getValue().unwrapped())
+    );
+
     Preconditions.checkArgument(generationIntervalSec > 0);
-    Preconditions.checkArgument(uiPort > 0);
   }
 
   private static String generateRandomID() {
@@ -155,57 +144,36 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
   }
 
   protected final JavaStreamingContext buildStreamingContext() {
-    log.info("Starting SparkContext for master {}, interval {} seconds",
-             streamingMaster, generationIntervalSec);
+    log.info("Starting SparkContext with interval {} seconds", generationIntervalSec);
 
     SparkConf sparkConf = new SparkConf();
 
-    sparkConf.setMaster(streamingMaster);
-    String appName = "Oryx" + getLayerName();
-    if (id != null) {
-      appName = appName + "-" + id;
+    // Only for tests, really
+    if (sparkConf.getOption("spark.master").isEmpty()) {
+      log.info("Overriding master to {} for tests", streamingMaster);
+      sparkConf.setMaster(streamingMaster);
     }
-    sparkConf.setAppName(appName);
-
-    sparkConf.setIfMissing("spark.serializer", "org.apache.spark.serializer.KryoSerializer");
-    sparkConf.setIfMissing("spark.io.compression.codec", "lzf");
-    sparkConf.setIfMissing("spark.speculation", "true");
-    sparkConf.setIfMissing("spark.shuffle.manager", "sort");
-
-    if (useDynamicAllocation) {
-      if (streamingMaster.startsWith("yarn")) { // yarn-client, yarn-cluster
-        sparkConf.setIfMissing("spark.shuffle.service.enabled", "true");
-        sparkConf.setIfMissing("spark.dynamicAllocation.enabled", "true");
-        sparkConf.setIfMissing("spark.dynamicAllocation.minExecutors", "1");
-        sparkConf.setIfMissing("spark.dynamicAllocation.maxExecutors",
-                               Integer.toString(numExecutors));
-        sparkConf.setIfMissing("spark.dynamicAllocation.executorIdleTimeout", "60");
-      } else {
-        log.warn("Ignoring dynamic allocation since master is {}", streamingMaster);
-        sparkConf.setIfMissing("spark.executor.instances", Integer.toString(numExecutors));
+    // Only for tests, really
+    if (sparkConf.getOption("spark.app.name").isEmpty()) {
+      String appName = "Oryx" + getLayerName();
+      if (id != null) {
+        appName = appName + "-" + id;
       }
-    } else {
-      sparkConf.setIfMissing("spark.executor.instances", Integer.toString(numExecutors));
+      log.info("Overriding app name to {} for tests", appName);
+      sparkConf.setAppName(appName);
     }
-
-    sparkConf.setIfMissing("spark.executor.cores", Integer.toString(executorCores));
-    sparkConf.setIfMissing("spark.executor.memory", executorMemoryString);
-    //sparkConf.setIfMissing("spark.driver.memory", driverMemoryString);
+    extraSparkConfig.forEach((key, value) -> sparkConf.setIfMissing(key, value.toString()));
 
     // Turn this down to prevent long blocking at shutdown
     sparkConf.setIfMissing(
         "spark.streaming.gracefulStopTimeout",
         Long.toString(TimeUnit.MILLISECONDS.convert(generationIntervalSec, TimeUnit.SECONDS)));
     sparkConf.setIfMissing("spark.cleaner.ttl", Integer.toString(20 * generationIntervalSec));
-    sparkConf.setIfMissing("spark.logConf", "true");
-    sparkConf.setIfMissing("spark.ui.port", Integer.toString(uiPort));
-    sparkConf.setIfMissing("spark.ui.showConsoleProgress", "false");
-
     long generationIntervalMS =
         TimeUnit.MILLISECONDS.convert(generationIntervalSec, TimeUnit.SECONDS);
 
-    return new JavaStreamingContext(new JavaSparkContext(sparkConf),
-                                    new Duration(generationIntervalMS));
+    JavaSparkContext jsc = JavaSparkContext.fromSparkContext(SparkContext.getOrCreate(sparkConf));
+    return new JavaStreamingContext(jsc, new Duration(generationIntervalMS));
   }
 
   protected final JavaInputDStream<MessageAndMetadata<K,M>> buildInputDStream(
@@ -214,9 +182,11 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
     Preconditions.checkArgument(
         com.cloudera.oryx.kafka.util.KafkaUtils.topicExists(inputTopicLockMaster, inputTopic),
         "Topic %s does not exist; did you create it?", inputTopic);
-    Preconditions.checkArgument(
-        com.cloudera.oryx.kafka.util.KafkaUtils.topicExists(updateTopicLockMaster, updateTopic),
-        "Topic %s does not exist; did you create it?", updateTopic);
+    if (updateTopic != null && updateTopicLockMaster != null) {
+      Preconditions.checkArgument(
+          com.cloudera.oryx.kafka.util.KafkaUtils.topicExists(updateTopicLockMaster, updateTopic),
+          "Topic %s does not exist; did you create it?", updateTopic);
+    }
 
     Map<String,String> kafkaParams = new HashMap<>();
     //kafkaParams.put("zookeeper.connect", inputTopicLockMaster);
@@ -248,31 +218,14 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
                                          streamClass,
                                          kafkaParams,
                                          offsets,
-                                         Functions.<MessageAndMetadata<K,M>>identity());
-  }
-
-  /**
-   * Translates a {@link MessageAndMetadata} key-message pair to a {@link Tuple2} of the same.
-   *
-   * @param <K> input topic key type
-   * @param <M> input topic message type
-   */
-  public static final class MMDToTuple2Fn<K,M> implements PairFunction<MessageAndMetadata<K,M>,K,M> {
-    @Override
-    public Tuple2<K,M> call(MessageAndMetadata<K,M> km) {
-      return new Tuple2<>(km.key(), km.message());
-    }
+                                         message -> message);
   }
 
   private static void fillInLatestOffsets(Map<TopicAndPartition,Long> offsets, Map<String,String> kafkaParams) {
     if (offsets.containsValue(null)) {
 
-      Set<TopicAndPartition> needOffset = new HashSet<>();
-      for (Map.Entry<TopicAndPartition, Long> entry : offsets.entrySet()) {
-        if (entry.getValue() == null) {
-          needOffset.add(entry.getKey());
-        }
-      }
+      Set<TopicAndPartition> needOffset = offsets.entrySet().stream().filter(entry -> entry.getValue() == null)
+          .map(Map.Entry::getKey).collect(Collectors.toSet());
       log.info("No initial offsets for {}; reading from Kafka", needOffset);
 
       // The high price of calling private Scala stuff:
@@ -288,14 +241,12 @@ public abstract class AbstractSparkLayer<K,M> implements Closeable {
       KafkaCluster kc = new KafkaCluster(kafkaParamsScalaMap);
       Map<TopicAndPartition,?> leaderOffsets =
           JavaConversions.mapAsJavaMap(kc.getLatestLeaderOffsets(needOffsetScalaSet).right().get());
-      for (Map.Entry<TopicAndPartition,?> entry : leaderOffsets.entrySet()) {
-        TopicAndPartition tAndP = entry.getKey();
+      leaderOffsets.forEach((tAndP, leaderOffsetsObj) -> {
         // Can't reference LeaderOffset class, so, hack away:
-        String leaderOffsetString = entry.getValue().toString();
-        Matcher m = Pattern.compile("LeaderOffset\\([^,]+,[^,]+,([^)]+)\\)").matcher(leaderOffsetString);
+        Matcher m = Pattern.compile("LeaderOffset\\([^,]+,[^,]+,([^)]+)\\)").matcher(leaderOffsetsObj.toString());
         Preconditions.checkState(m.matches());
         offsets.put(tAndP, Long.valueOf(m.group(1)));
-      }
+      });
     }
 
   }

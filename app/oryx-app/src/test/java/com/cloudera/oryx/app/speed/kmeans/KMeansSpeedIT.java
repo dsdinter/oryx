@@ -61,19 +61,17 @@ public final class KMeansSpeedIT extends AbstractSpeedIT {
                                         300, // @10 msec should make 1 interval
                                         1);
 
-    for (Pair<String, String> update : updates) {
-      log.info("{}", update);
-    }
+    updates.forEach(update -> log.info("{}", update));
 
     int numUpdates = updates.size();
 
     // Model plus at least 3 updates, 1 per cluster
-    assertTrue(updates.size() >= NUM_CLUSTERS + 1);
+    assertGreaterOrEqual(updates.size(), NUM_CLUSTERS + 1);
     assertEquals("MODEL", updates.get(0).getFirst());
 
     PMML pmml = PMMLUtils.fromString(updates.get(0).getSecond());
     Model model = pmml.getModels().get(0);
-    assertTrue(model instanceof ClusteringModel);
+    assertInstanceOf(model, ClusteringModel.class);
 
     ClusteringModel clusteringModel = (ClusteringModel) model;
     assertEquals(NUM_CLUSTERS, clusteringModel.getNumberOfClusters().intValue());
@@ -83,9 +81,9 @@ public final class KMeansSpeedIT extends AbstractSpeedIT {
     for (int i = 1; i < numUpdates; i++) {
       Pair<String,String> update = updates.get(i);
       assertEquals("UP", update.getFirst());
-      List<?> fields = MAPPER.readValue(update.getSecond(), List.class);
+      List<?> fields = TextUtils.readJSON(update.getSecond(), List.class);
       int clusterID = (Integer) fields.get(0);
-      double[] updatedCenter = MAPPER.convertValue(fields.get(1), double[].class);
+      double[] updatedCenter = TextUtils.convertViaJSON(fields.get(1), double[].class);
       int updatedClusterSize = (Integer) fields.get(2);
       clusterInfos.put(clusterID, new ClusterInfo(clusterID, updatedCenter, updatedClusterSize));
     }
@@ -106,7 +104,7 @@ public final class KMeansSpeedIT extends AbstractSpeedIT {
       assertArrayEquals(updatedCenter, MockKMeansInputGenerator.UPDATE_POINTS[id], 0.1);
 
       long updatedClusterSize = clusterInfo.getCount();
-      assertTrue(updatedClusterSize > cluster.getSize());
+      assertGreater(updatedClusterSize, cluster.getSize());
       assertEquals(100 + cluster.getSize(), updatedClusterSize);
     }
   }

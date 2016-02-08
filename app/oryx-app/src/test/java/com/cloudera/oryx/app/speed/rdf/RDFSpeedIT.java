@@ -33,6 +33,7 @@ import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.pmml.PMMLUtils;
 import com.cloudera.oryx.common.random.RandomManager;
 import com.cloudera.oryx.common.settings.ConfigUtils;
+import com.cloudera.oryx.common.text.TextUtils;
 import com.cloudera.oryx.lambda.speed.AbstractSpeedIT;
 
 public final class RDFSpeedIT extends AbstractSpeedIT {
@@ -61,41 +62,39 @@ public final class RDFSpeedIT extends AbstractSpeedIT {
                                         1);
 
     if (log.isDebugEnabled()) {
-      for (Pair<String, String> update : updates) {
-        log.debug("{}", update);
-      }
+      updates.forEach(update -> log.debug("{}", update));
     }
 
     int numUpdates = updates.size();
 
     // Model, and then pairs of positive / negative
-    assertTrue(numUpdates >= 3 && numUpdates % 2 != 0);
+    assertGreaterOrEqual(numUpdates, 3);
+    assertNotEquals(0, numUpdates % 2);
     // Not testing the model much here:
     assertEquals("MODEL", updates.get(0).getFirst());
 
     for (int i = 1; i < numUpdates; i++) {
       Pair<String, String> update = updates.get(i);
       assertEquals("UP", update.getFirst());
-      List<?> fields = MAPPER.readValue(update.getSecond(), List.class);
+      List<?> fields = TextUtils.readJSON(update.getSecond(), List.class);
       int treeID = (Integer) fields.get(0);
       String nodeID = fields.get(1).toString();
       double mean = (Double) fields.get(2);
       int count = (Integer) fields.get(3);
       assertEquals(0, treeID);
-      assertTrue("r-".equals(nodeID) || "r+".equals(nodeID));
+      assertContains(Arrays.asList("r-", "r+"), nodeID);
       double[] minMax = minMaxExpectedMean(count, "r+".equals(nodeID));
-      assertTrue(count + "/" + mean + " not in " + Arrays.toString(minMax),
-                 mean >= minMax[0] - DOUBLE_EPSILON && mean <= minMax[1] + DOUBLE_EPSILON);
+      assertRange(mean, minMax[0] - DOUBLE_EPSILON, minMax[1] + DOUBLE_EPSILON);
     }
 
     for (int i = 1; i < numUpdates; i += 2) {
       Pair<String, String> update1 = updates.get(i);
       Pair<String, String> update2 = updates.get(i + 1);
-      List<?> fields1 = MAPPER.readValue(update1.getSecond(), List.class);
-      List<?> fields2 = MAPPER.readValue(update2.getSecond(), List.class);
+      List<?> fields1 = TextUtils.readJSON(update1.getSecond(), List.class);
+      List<?> fields2 = TextUtils.readJSON(update2.getSecond(), List.class);
       int count1 = (Integer) fields1.get(3);
       int count2 = (Integer) fields2.get(3);
-      assertTrue(Math.abs(count1 - count2) <= 1);
+      assertLessOrEqual(Math.abs(count1 - count2), 1);
       String nodeID1 = fields1.get(1).toString();
       String nodeID2 = fields2.get(1).toString();
       if ("r-".equals(nodeID1)) {
@@ -143,15 +142,14 @@ public final class RDFSpeedIT extends AbstractSpeedIT {
                                         1);
 
     if (log.isDebugEnabled()) {
-      for (Pair<String, String> update : updates) {
-        log.debug("{}", update);
-      }
+      updates.forEach(update -> log.debug("{}", update));
     }
 
     int numUpdates = updates.size();
 
     // Model, and then pairs of positive / negative
-    assertTrue(numUpdates >= 3 && numUpdates % 2 != 0);
+    assertGreaterOrEqual(numUpdates, 3);
+    assertNotEquals(0, numUpdates % 2);
     // Not testing the model much here:
     assertEquals("MODEL", updates.get(0).getFirst());
 
@@ -166,17 +164,17 @@ public final class RDFSpeedIT extends AbstractSpeedIT {
     for (int i = 1; i < numUpdates; i++) {
       Pair<String, String> update = updates.get(i);
       assertEquals("UP", update.getFirst());
-      List<?> fields = MAPPER.readValue(update.getSecond(), List.class);
+      List<?> fields = TextUtils.readJSON(update.getSecond(), List.class);
       int treeID = (Integer) fields.get(0);
       String nodeID = fields.get(1).toString();
       @SuppressWarnings("unchecked")
       Map<String,Integer> countMap = (Map<String,Integer>) fields.get(2);
       assertEquals(0, treeID);
-      assertTrue("r-".equals(nodeID) || "r+".equals(nodeID));
+      assertContains(Arrays.asList("r-", "r+"), nodeID);
       int yellowCount = countMap.containsKey(yellow) ? countMap.get(yellow) : 0;
       int redCount = countMap.containsKey(red) ? countMap.get(red) : 0;
       int count = yellowCount + redCount;
-      assertTrue(count > 0);
+      assertGreater(count, 0);
       BinomialDistribution dist = new BinomialDistribution(RandomManager.getRandom(), count, 0.9);
       if ("r+".equals(nodeID)) {
         // Should be about 9x more yellow

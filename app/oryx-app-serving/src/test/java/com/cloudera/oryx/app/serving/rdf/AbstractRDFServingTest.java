@@ -24,7 +24,7 @@ import java.util.List;
 
 import com.typesafe.config.Config;
 
-import com.cloudera.oryx.app.serving.AbstractOryxResource;
+import com.cloudera.oryx.api.serving.OryxResource;
 import com.cloudera.oryx.app.serving.IDValue;
 import com.cloudera.oryx.app.serving.rdf.model.RDFServingModel;
 import com.cloudera.oryx.app.serving.rdf.model.TestRDFRegressionModelFactory;
@@ -32,14 +32,17 @@ import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.lambda.serving.AbstractServingTest;
 import com.cloudera.oryx.lambda.serving.MockTopicProducer;
 
-public abstract class AbstractRDFServingTest extends AbstractServingTest {
+abstract class AbstractRDFServingTest extends AbstractServingTest {
 
-  protected static final GenericType<List<IDValue>> LIST_ID_VALUE_TYPE =
+  static final GenericType<List<IDValue>> LIST_ID_VALUE_TYPE =
       new GenericType<List<IDValue>>() {};
 
   @Override
   protected final List<String> getResourcePackages() {
-    return Arrays.asList("com.cloudera.oryx.app.serving", "com.cloudera.oryx.app.serving.rdf");
+    return Arrays.asList(
+        "com.cloudera.oryx.app.serving",
+        "com.cloudera.oryx.app.serving.classreg",
+        "com.cloudera.oryx.app.serving.rdf");
   }
 
   @Override
@@ -51,14 +54,16 @@ public abstract class AbstractRDFServingTest extends AbstractServingTest {
     @Override
     public final void contextInitialized(ServletContextEvent sce) {
       ServletContext context = sce.getServletContext();
-      context.setAttribute(AbstractOryxResource.MODEL_MANAGER_KEY,
-                           new MockServingModelManager(ConfigUtils.getDefault()));
-      context.setAttribute(AbstractOryxResource.INPUT_PRODUCER_KEY, new MockTopicProducer());
+      context.setAttribute(OryxResource.MODEL_MANAGER_KEY, getModelManager());
+      context.setAttribute(OryxResource.INPUT_PRODUCER_KEY, new MockTopicProducer());
+    }
+    MockServingModelManager getModelManager() {
+      return new MockServingModelManager(ConfigUtils.getDefault());
     }
   }
 
-  protected static class MockServingModelManager extends AbstractMockServingModelManager {
-    public MockServingModelManager(Config config) {
+  static class MockServingModelManager extends AbstractMockServingModelManager {
+    MockServingModelManager(Config config) {
       super(config);
     }
     @Override

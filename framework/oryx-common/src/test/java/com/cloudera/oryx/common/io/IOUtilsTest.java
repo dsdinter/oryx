@@ -17,18 +17,16 @@ package com.cloudera.oryx.common.io;
 
 import java.io.IOException;
 import java.net.ServerSocket;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Arrays;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 
 import org.junit.Test;
 
 import com.cloudera.oryx.common.OryxTest;
+import com.cloudera.oryx.common.lang.LoggingTest;
 
 /**
  * Tests {@link IOUtils}.
@@ -76,9 +74,9 @@ public final class IOUtilsTest extends OryxTest {
     Path testDir = createTestDirs();
     List<Path> files = IOUtils.listFiles(testDir, "*");
     assertEquals(2, files.size());
-    assertTrue(files.contains(testDir.resolve("subFile1")));
-    assertFalse(files.contains(testDir.resolve(".hidden")));
-    assertTrue(files.contains(testDir.resolve("subDir1")));
+    assertContains(files, testDir.resolve("subFile1"));
+    assertNotContains(files, testDir.resolve(".hidden"));
+    assertContains(files, testDir.resolve("subDir1"));
   }
 
   @Test
@@ -86,9 +84,9 @@ public final class IOUtilsTest extends OryxTest {
     Path testDir = createTestDirs();
     List<Path> files = IOUtils.listFiles(testDir, "");
     assertEquals(2, files.size());
-    assertTrue(files.contains(testDir.resolve("subFile1")));
-    assertFalse(files.contains(testDir.resolve(".hidden")));
-    assertTrue(files.contains(testDir.resolve("subDir1")));
+    assertContains(files, testDir.resolve("subFile1"));
+    assertNotContains(files, testDir.resolve(".hidden"));
+    assertContains(files, testDir.resolve("subDir1"));
   }
 
   @Test
@@ -96,8 +94,8 @@ public final class IOUtilsTest extends OryxTest {
     Path testDir = createTestDirs();
     List<Path> files = IOUtils.listFiles(testDir, "*/*");
     assertEquals(2, files.size());
-    assertTrue(files.contains(testDir.resolve("subDir1").resolve("subFile2")));
-    assertTrue(files.contains(testDir.resolve("subDir1").resolve("subDir2")));
+    assertContains(files, testDir.resolve("subDir1").resolve("subFile2"));
+    assertContains(files, testDir.resolve("subDir1").resolve("subDir2"));
   }
 
   @Test
@@ -105,7 +103,7 @@ public final class IOUtilsTest extends OryxTest {
     Path testDir = createTestDirs();
     List<Path> files = IOUtils.listFiles(testDir, "*/subFile*");
     assertEquals(1, files.size());
-    assertTrue(files.contains(testDir.resolve("subDir1").resolve("subFile2")));
+    assertContains(files, testDir.resolve("subDir1").resolve("subFile2"));
   }
 
   @Test
@@ -117,24 +115,9 @@ public final class IOUtilsTest extends OryxTest {
   }
 
   @Test
-  public void testReadLines() throws IOException {
-    Path tempDir = getTempDir();
-    Path textFile = tempDir.resolve("file.txt");
-    Files.write(textFile, Arrays.asList("foo", "bar", "baz"), StandardCharsets.UTF_8);
-    Iterator<String> it = IOUtils.readLines(textFile).iterator();
-    assertTrue(it.hasNext());
-    assertEquals("foo", it.next());
-    assertTrue(it.hasNext());
-    assertEquals("bar", it.next());
-    assertTrue(it.hasNext());
-    assertEquals("baz", it.next());
-    assertFalse(it.hasNext());
-  }
-
-  @Test
   public void testChooseFreePort() throws IOException {
     int freePort = IOUtils.chooseFreePort();
-    assertTrue(freePort >= 1024 && freePort < 65536);
+    assertRange(freePort, 1024, 65535);
     try (ServerSocket socket = new ServerSocket(freePort, 0)) {
       assertEquals(freePort, socket.getLocalPort());
     }
@@ -149,6 +132,12 @@ public final class IOUtilsTest extends OryxTest {
       ports.add(IOUtils.chooseFreePort());
     }
     assertEquals(10, ports.size());
+  }
+
+  @Test
+  public void testCloseQuietly() {
+    // Shouldn't throw
+    IOUtils.closeQuietly(() -> { throw LoggingTest.DUMMY_EXCEPTION; });
   }
 
 }

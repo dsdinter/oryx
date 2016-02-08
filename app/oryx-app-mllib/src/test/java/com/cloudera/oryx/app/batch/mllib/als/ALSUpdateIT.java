@@ -16,15 +16,19 @@
 package com.cloudera.oryx.app.batch.mllib.als;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.GZIPInputStream;
 
 import com.typesafe.config.Config;
 import org.dmg.pmml.PMML;
@@ -38,6 +42,7 @@ import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.io.IOUtils;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.common.pmml.PMMLUtils;
+import com.cloudera.oryx.common.text.TextUtils;
 import com.cloudera.oryx.ml.MLUpdate;
 
 public final class ALSUpdateIT extends AbstractALSIT {
@@ -80,14 +85,13 @@ public final class ALSUpdateIT extends AbstractALSIT {
     checkIntervals(generations, DATA_TO_WRITE, WRITE_INTERVAL_MSEC, GEN_INTERVAL_SEC);
 
     List<Collection<String>> userIDs = new ArrayList<>();
-    userIDs.add(Collections.<String>emptySet()); // Add dummy empty set as prior value
+    userIDs.add(Collections.emptySet()); // Add dummy empty set as prior value
     List<Collection<String>> productIDs = new ArrayList<>();
-    productIDs.add(Collections.<String>emptySet()); // Add dummy empty set as prior value
+    productIDs.add(Collections.emptySet()); // Add dummy empty set as prior value
 
     for (Path modelInstanceDir : modelInstanceDirs) {
       Path modelFile = modelInstanceDir.resolve(MLUpdate.MODEL_FILE_NAME);
-      assertTrue("Model file should exist: " + modelFile, Files.exists(modelFile));
-      assertTrue("Model file should not be empty: " + modelFile, Files.size(modelFile) > 0);
+      assertNonEmpty(modelFile);
       PMMLUtils.read(modelFile); // Shouldn't throw exception
       Path xDir = modelInstanceDir.resolve("X");
       assertTrue(Files.exists(xDir));
@@ -119,7 +123,7 @@ public final class ALSUpdateIT extends AbstractALSIT {
         assertNotNull(seenUsers);
         assertNotNull(seenProducts);
 
-        List<?> update = MAPPER.readValue(value, List.class);
+        List<?> update = TextUtils.readJSON(value, List.class);
         // First field is X or Y, depending on whether it's a user or item vector
         String whichMatrixField = update.get(0).toString();
         boolean isUser = "X".equals(whichMatrixField);
@@ -133,7 +137,7 @@ public final class ALSUpdateIT extends AbstractALSIT {
           seenProducts.add(id);
         }
         // Verify that feature vector are valid floats
-        for (float f : MAPPER.convertValue(update.get(2), float[].class)) {
+        for (float f : TextUtils.convertViaJSON(update.get(2), float[].class)) {
           assertTrue(!Float.isNaN(f) && !Float.isInfinite(f));
         }
 
@@ -141,16 +145,16 @@ public final class ALSUpdateIT extends AbstractALSIT {
           // Only known-items for users exist now, not known users for items
           @SuppressWarnings("unchecked")
           Collection<String> knownUsersItems = (Collection<String>) update.get(3);
-          assertFalse(knownUsersItems.isEmpty());
+          assertNotEquals(0, knownUsersItems.size());
           for (String known : knownUsersItems) {
             int i = ALSUtilsTest.stringIDtoID(known);
-            assertTrue(i >= 0 && i < NUM_USERS_ITEMS);
+            assertElementIndex(i, NUM_USERS_ITEMS);
           }
         }
 
       } else {
 
-        assertTrue("MODEL".equals(type) || "MODEL-REF".equals(type));
+        assertContains(Arrays.asList("MODEL", "MODEL-REF"), type);
         PMML pmml = AppPMMLUtils.readPMMLFromUpdateKeyMessage(type, value, null);
 
         checkHeader(pmml.getHeader());
@@ -188,15 +192,26 @@ public final class ALSUpdateIT extends AbstractALSIT {
       throws IOException {
     Collection<String> seenIDs = new HashSet<>();
     for (Path file : IOUtils.listFiles(path, "part-*")) {
-      for (String line : IOUtils.readLines(file)) {
-        List<?> update = MAPPER.readValue(line, List.class);
+      Path uncompressedFile = copyAndUncompress(file);
+      Files.lines(uncompressedFile).forEach(line -> {
+        List<?> update = TextUtils.readJSON(line, List.class);
         seenIDs.add(update.get(0).toString());
-        assertEquals(FEATURES, MAPPER.convertValue(update.get(1), float[].class).length);
-      }
+        assertEquals(FEATURES, TextUtils.convertViaJSON(update.get(1), float[].class).length);
+      });
+      Files.delete(uncompressedFile);
     }
-    assertFalse(seenIDs.isEmpty());
+    assertNotEquals(0, seenIDs.size());
     assertTrue(seenIDs.containsAll(previousIDs));
     return seenIDs;
+  }
+
+  private static Path copyAndUncompress(Path compressed) throws IOException {
+    Path tempFile = Files.createTempFile("part", ".csv");
+    tempFile.toFile().deleteOnExit();
+    try (InputStream in = new GZIPInputStream(Files.newInputStream(compressed))) {
+      Files.copy(in, tempFile, StandardCopyOption.REPLACE_EXISTING);
+    }
+    return tempFile;
   }
 
 }

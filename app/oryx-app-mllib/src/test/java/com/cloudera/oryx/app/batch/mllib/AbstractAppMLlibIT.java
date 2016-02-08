@@ -46,12 +46,10 @@ public abstract class AbstractAppMLlibIT extends AbstractBatchIT {
   }
 
   protected static void checkExtensions(PMML pmml, Map<String,?> expected) {
-    for (Map.Entry<String,?> e : expected.entrySet()) {
-      String key = e.getKey();
+    expected.forEach((key, value) ->
       assertEquals("Value for key " + key + " did not match",
-                   e.getValue().toString(),
-                   AppPMMLUtils.getExtensionValue(pmml, key));
-    }
+                   value.toString(), AppPMMLUtils.getExtensionValue(pmml, key))
+    );
   }
 
   protected static void checkDataDictionary(InputSchema schema, DataDictionary dataDictionary) {
@@ -95,24 +93,9 @@ public abstract class AbstractAppMLlibIT extends AbstractBatchIT {
       String expectedFeature = expectedFeatureNames.get(i);
       String featureName = miningField.getName().getValue();
       assertEquals("Wrong feature at position " + i, expectedFeature, featureName);
-      if (schema.isNumeric(expectedFeature)) {
+      if (schema.isNumeric(expectedFeature) || schema.isCategorical(expectedFeature)) {
         assertEquals("Wrong op type for feature + " + featureName,
-                     OpType.CONTINUOUS,
-                     miningField.getOpType());
-        if (schema.isTarget(expectedFeature)) {
-          assertEquals("Wrong usage type for feature + " + featureName,
-                       FieldUsageType.PREDICTED,
-                       miningField.getUsageType());
-        } else {
-          assertEquals("Wrong usage type for feature + " + featureName,
-                       FieldUsageType.ACTIVE,
-                       miningField.getUsageType());
-          double importance = miningField.getImportance();
-          assertTrue("Bad importance value " + importance, importance >= 0.0 && importance <= 1.0);
-        }
-      } else if (schema.isCategorical(expectedFeature)) {
-        assertEquals("Wrong op type for feature " + featureName,
-                     OpType.CATEGORICAL,
+                     schema.isNumeric(expectedFeature) ? OpType.CONTINUOUS : OpType.CATEGORICAL,
                      miningField.getOpType());
         if (schema.isTarget(expectedFeature)) {
           assertEquals("Wrong usage type for feature " + featureName,
@@ -122,8 +105,7 @@ public abstract class AbstractAppMLlibIT extends AbstractBatchIT {
           assertEquals("Wrong usage type for feature " + featureName,
                        FieldUsageType.ACTIVE,
                        miningField.getUsageType());
-          double importance = miningField.getImportance();
-          assertTrue("Bad importance value " + importance, importance >= 0.0 && importance <= 1.0);
+          assertRange(miningField.getImportance(), 0.0, 1.0);
         }
       } else {
         assertEquals("Wrong usage type for feature " + featureName,

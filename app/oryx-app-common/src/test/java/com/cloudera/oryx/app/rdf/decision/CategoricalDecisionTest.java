@@ -19,10 +19,10 @@ import java.util.BitSet;
 
 import org.junit.Test;
 
-import com.cloudera.oryx.app.rdf.example.CategoricalFeature;
-import com.cloudera.oryx.app.rdf.example.Example;
-import com.cloudera.oryx.app.rdf.example.Feature;
-import com.cloudera.oryx.app.rdf.example.FeatureType;
+import com.cloudera.oryx.app.classreg.example.CategoricalFeature;
+import com.cloudera.oryx.app.classreg.example.Example;
+import com.cloudera.oryx.app.classreg.example.Feature;
+import com.cloudera.oryx.app.classreg.example.FeatureType;
 import com.cloudera.oryx.common.OryxTest;
 
 /**
@@ -59,6 +59,19 @@ public final class CategoricalDecisionTest extends OryxTest {
     activeCategories.set(5);
     CategoricalDecision decision = new CategoricalDecision(0, activeCategories, true);
     assertEquals("(#0 ∈ [2,5])", decision.toString());
+  }
+
+  @Test
+  public void testEqualsHashCode() {
+    BitSet activeCategories = new BitSet(10);
+    activeCategories.set(5);
+    CategoricalDecision a = new CategoricalDecision(0, activeCategories, true);
+    CategoricalDecision b = new CategoricalDecision(0, activeCategories, true);
+    CategoricalDecision c = new CategoricalDecision(1, activeCategories, true);
+    assertEquals(a, b);
+    assertNotEquals(a, c);
+    assertEquals(a.hashCode(), b.hashCode());
+    assertNotEquals(a.hashCode(), c.hashCode());
   }
 
 }

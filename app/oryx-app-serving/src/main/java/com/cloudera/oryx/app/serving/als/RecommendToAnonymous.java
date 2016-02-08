@@ -15,9 +15,12 @@
 
 package com.cloudera.oryx.app.serving.als;
 
-import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import javax.inject.Singleton;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -29,17 +32,13 @@ import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.PathSegment;
 
 import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
-import net.openhft.koloboke.function.Predicate;
 
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
 import com.cloudera.oryx.app.als.RescorerProvider;
-import com.cloudera.oryx.common.collection.NotContainsPredicate;
-import com.cloudera.oryx.common.collection.Pair;
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
 import com.cloudera.oryx.app.serving.IDValue;
-import com.cloudera.oryx.app.serving.OryxServingException;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
-import com.cloudera.oryx.common.collection.Predicates;
+import com.cloudera.oryx.common.collection.Pair;
 
 /**
  * <p>Responds to a GET request to
@@ -52,7 +51,8 @@ import com.cloudera.oryx.common.collection.Predicates;
  * Outputs contain item and score pairs, where the score is an opaque
  * value where higher values mean a better recommendation.</p>
  *
- * <p>{@code howMany} and {@code offset} behavior, and output, are as in {@link Recommend}.</p>
+ * <p>{@code howMany}, {@code considerKnownItems} and {@code offset} behavior, and output, are as in
+ * {@link Recommend}.</p>
  */
 @Singleton
 @Path("/recommendToAnonymous")
@@ -60,38 +60,38 @@ public final class RecommendToAnonymous extends AbstractALSResource {
 
   @GET
   @Path("{itemID : .+}")
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public List<IDValue> get(
       @PathParam("itemID") List<PathSegment> pathSegments,
       @DefaultValue("10") @QueryParam("howMany") int howMany,
       @DefaultValue("0") @QueryParam("offset") int offset,
       @QueryParam("rescorerParams") List<String> rescorerParams) throws OryxServingException {
 
+    check(!pathSegments.isEmpty(), "Need at least 1 item to make recommendations");
     check(howMany > 0, "howMany must be positive");
     check(offset >= 0, "offset must be nonnegative");
 
     ALSServingModel model = getALSServingModel();
-    double[] anonymousUserFeatures =
-        EstimateForAnonymous.buildAnonymousUserFeatures(model, pathSegments);
+    List<Pair<String,Double>> parsedPathSegments = EstimateForAnonymous.parsePathSegments(pathSegments);
+    float[] anonymousUserFeatures = EstimateForAnonymous.buildTemporaryUserVector(model, parsedPathSegments, null);
+    check(anonymousUserFeatures != null, pathSegments.toString());
 
-    List<String> knownItems = new ArrayList<>();
-    for (Pair<String,?> itemValue : EstimateForAnonymous.parsePathSegments(pathSegments)) {
-      knownItems.add(itemValue.getFirst());
-    }
+    List<String> knownItems = parsedPathSegments.stream().map(Pair::getFirst).collect(Collectors.toList());
 
-    Predicate<String> allowedFn = new NotContainsPredicate<>(new HashSet<>(knownItems));
+    Collection<String> knownItemsSet = new HashSet<>(knownItems);
+    Predicate<String> allowedFn = v -> !knownItemsSet.contains(v);
     ObjDoubleToDoubleFunction<String> rescoreFn = null;
     RescorerProvider rescorerProvider = getALSServingModel().getRescorerProvider();
     if (rescorerProvider != null) {
       Rescorer rescorer = rescorerProvider.getRecommendToAnonymousRescorer(knownItems,
                                                                            rescorerParams);
       if (rescorer != null) {
-        allowedFn = Predicates.and(allowedFn, buildRescorerPredicate(rescorer));
-        rescoreFn = buildRescoreFn(rescorer);
+        allowedFn = allowedFn.and(id -> !rescorer.isFiltered(id));
+        rescoreFn = rescorer::rescore;
       }
     }
 
-    List<Pair<String,Double>> topIDDots = model.topN(
+    Stream<Pair<String,Double>> topIDDots = model.topN(
         new DotsFunction(anonymousUserFeatures),
         rescoreFn,
         howMany + offset,

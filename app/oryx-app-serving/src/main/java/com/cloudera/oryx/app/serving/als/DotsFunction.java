@@ -15,6 +15,8 @@
 
 package com.cloudera.oryx.app.serving.als;
 
+import java.util.Objects;
+
 import com.cloudera.oryx.common.math.VectorMath;
 
 /**
@@ -22,19 +24,16 @@ import com.cloudera.oryx.common.math.VectorMath;
  */
 public final class DotsFunction implements CosineDistanceSensitiveFunction {
 
-  private final double[] userFeaturesVector;
+  private final float[] userFeaturesVector;
 
   public DotsFunction(float[] userVector) {
-    this(VectorMath.toDoubles(userVector));
-  }
-
-  public DotsFunction(double[] userVector) {
+    Objects.requireNonNull(userVector);
     this.userFeaturesVector = userVector;
   }
 
-  public DotsFunction(double[][] userFeaturesVectors) {
-    userFeaturesVector = new double[userFeaturesVectors[0].length];
-    for (double[] vec : userFeaturesVectors) {
+  public DotsFunction(float[][] userFeaturesVectors) {
+    float[] userFeaturesVector = new float[userFeaturesVectors[0].length];
+    for (float[] vec : userFeaturesVectors) {
       for (int i = 0; i < vec.length; i++) {
         userFeaturesVector[i] += vec[i];
       }
@@ -42,6 +41,7 @@ public final class DotsFunction implements CosineDistanceSensitiveFunction {
     for (int i = 0; i < userFeaturesVector.length; i++) {
       userFeaturesVector[i] /= userFeaturesVectors.length;
     }
+    this.userFeaturesVector = userFeaturesVector;
   }
 
   @Override
@@ -50,7 +50,7 @@ public final class DotsFunction implements CosineDistanceSensitiveFunction {
   }
 
   @Override
-  public double[] getTargetVector() {
+  public float[] getTargetVector() {
     return userFeaturesVector;
   }
 

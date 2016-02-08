@@ -22,65 +22,98 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
-import java.util.List;
+import java.util.Collection;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.ZipInputStream;
-import javax.annotation.PostConstruct;
 import javax.servlet.ServletContext;
+import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.Part;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.Response;
 
-import org.apache.commons.fileupload.FileItem;
+import com.google.common.base.Preconditions;
 import org.apache.commons.fileupload.FileUploadException;
 import org.apache.commons.fileupload.disk.DiskFileItemFactory;
 import org.apache.commons.fileupload.servlet.FileCleanerCleanup;
 import org.apache.commons.fileupload.servlet.ServletFileUpload;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.cloudera.oryx.api.TopicProducer;
-import com.cloudera.oryx.api.serving.ServingModelManager;
+import com.cloudera.oryx.api.serving.OryxResource;
+import com.cloudera.oryx.api.serving.OryxServingException;
+import com.cloudera.oryx.api.serving.ServingModel;
 
 /**
  * Superclass of all Serving Layer application endpoints.
  */
-public abstract class AbstractOryxResource {
+public abstract class AbstractOryxResource extends OryxResource {
 
-  public static final String MODEL_MANAGER_KEY =
-      "com.cloudera.oryx.lambda.serving.ModelManagerListener.ModelManager";
-  public static final String INPUT_PRODUCER_KEY =
-      "com.cloudera.oryx.lambda.serving.ModelManagerListener.InputProducer";
+  private static final Logger log = LoggerFactory.getLogger(AbstractOryxResource.class);
 
   private static final AtomicReference<DiskFileItemFactory> sharedFileItemFactory =
       new AtomicReference<>();
 
   @Context
   private ServletContext servletContext;
-  private TopicProducer<String,String> inputProducer;
-  private ServingModelManager<?> servingModelManager;
-
-  @SuppressWarnings("unchecked")
-  @PostConstruct
-  protected void init() {
-    servingModelManager = (ServingModelManager<?>) servletContext.getAttribute(MODEL_MANAGER_KEY);
-    inputProducer = (TopicProducer<String,String>) servletContext.getAttribute(INPUT_PRODUCER_KEY);
-  }
-
-  protected ServingModelManager<?> getServingModelManager() {
-    return servingModelManager;
-  }
+  private boolean hasLoadedEnough;
 
   protected final void sendInput(String message) {
+    @SuppressWarnings("unchecked")
+    TopicProducer<String,String> inputProducer = (TopicProducer<String,String>) getInputProducer();
     inputProducer.send(Integer.toHexString(message.hashCode()), message);
   }
 
-  protected final List<FileItem> parseMultipart(HttpServletRequest request)
-      throws OryxServingException {
+  protected final boolean isReadOnly() {
+    return getServingModelManager().isReadOnly();
+  }
 
-    // JAX-RS does not by itself support multipart form data yet, so doing it manually.
-    // We'd use Servlet 3.0 but the Grizzly test harness doesn't let us test it :(
-    // Good old Commons FileUpload it is:
+  protected final ServingModel getServingModel() throws OryxServingException {
+    ServingModel servingModel = getServingModelManager().getModel();
+    if (hasLoadedEnough) {
+      Objects.requireNonNull(servingModel);
+      return servingModel;
+    }
+    if (servingModel != null) {
+      double minModelLoadFraction = getServingModelManager().getConfig()
+          .getDouble("oryx.serving.min-model-load-fraction");
+      Preconditions.checkArgument(minModelLoadFraction >= 0.0 && minModelLoadFraction <= 1.0);
+      float fractionLoaded = servingModel.getFractionLoaded();
+      log.info("Model loaded fraction: {}", fractionLoaded);
+      if (fractionLoaded >= minModelLoadFraction) {
+        hasLoadedEnough = true;
+      }
+    }
+    if (hasLoadedEnough) {
+      Objects.requireNonNull(servingModel);
+      return servingModel;
+    } else {
+      throw new OryxServingException(Response.Status.SERVICE_UNAVAILABLE);
+    }
+  }
 
+  protected final Collection<Part> parseMultipart(HttpServletRequest request) throws OryxServingException {
+    Collection<Part> parts;
+    try {
+      try {
+        // Prefer container's standard JavaEE multipart parsing:
+        parts = request.getParts();
+      } catch (UnsupportedOperationException uoe) {
+        // Grizzly (used in tests) doesn't support this; fall back until it does
+        parts = parseMultipartWithCommonsFileUpload(request);
+      }
+    } catch (IOException | ServletException e) {
+      throw new OryxServingException(Response.Status.BAD_REQUEST, e.getMessage());
+    }
+    check(!parts.isEmpty(), "No parts");
+    return parts;
+  }
+
+  private Collection<Part> parseMultipartWithCommonsFileUpload(HttpServletRequest request) throws IOException {
     if (sharedFileItemFactory.get() == null) {
       // Not a big deal if two threads actually set this up
       DiskFileItemFactory fileItemFactory = new DiskFileItemFactory(
@@ -90,14 +123,12 @@ public abstract class AbstractOryxResource {
       sharedFileItemFactory.compareAndSet(null, fileItemFactory);
     }
 
-    List<FileItem> fileItems;
     try {
-      fileItems = new ServletFileUpload(sharedFileItemFactory.get()).parseRequest(request);
+      return new ServletFileUpload(sharedFileItemFactory.get()).parseRequest(request)
+          .stream().map(FileItemPart::new).collect(Collectors.toList());
     } catch (FileUploadException e) {
-      throw new OryxServingException(Response.Status.BAD_REQUEST, e.getMessage());
+      throw new IOException(e.getMessage());
     }
-    check(!fileItems.isEmpty(), "No parts");
-    return fileItems;
   }
 
   protected static void check(boolean condition,
@@ -118,6 +149,10 @@ public abstract class AbstractOryxResource {
     check(condition, Response.Status.NOT_FOUND, entity);
   }
 
+  protected void checkNotReadOnly() throws OryxServingException {
+    check(!isReadOnly(), Response.Status.FORBIDDEN, "Serving Layer is read-only");
+  }
+
   protected static BufferedReader maybeBuffer(InputStream in) {
     return maybeBuffer(new InputStreamReader(in, StandardCharsets.UTF_8));
   }
@@ -126,7 +161,7 @@ public abstract class AbstractOryxResource {
     return reader instanceof BufferedReader ? (BufferedReader) reader : new BufferedReader(reader);
   }
 
-  protected static InputStream maybeDecompress(FileItem item) throws IOException {
+  protected static InputStream maybeDecompress(Part item) throws IOException {
     InputStream in = item.getInputStream();
     String contentType = item.getContentType();
     if (contentType != null) {

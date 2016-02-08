@@ -15,8 +15,8 @@
 
 package com.cloudera.oryx.app.batch.mllib.kmeans;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -76,8 +76,7 @@ public final class KMeansUpdateIT extends AbstractKMeansIT {
 
     for (Path modelInstanceDir : modelInstanceDirs) {
       Path modelFile = modelInstanceDir.resolve(MLUpdate.MODEL_FILE_NAME);
-      assertTrue("Model file should exist: " + modelFile, Files.exists(modelFile));
-      assertTrue("Model file should not be empty: " + modelFile, Files.size(modelFile) > 0);
+      assertNonEmpty(modelFile);
       PMMLUtils.read(modelFile); // Shouldn't throw exception
     }
 
@@ -88,7 +87,7 @@ public final class KMeansUpdateIT extends AbstractKMeansIT {
       String type = km.getFirst();
       String value = km.getSecond();
 
-      assertTrue("MODEL".equals(type) || "MODEL-REF".equals(type));
+      assertContains(Arrays.asList("MODEL", "MODEL-REF"), type);
       PMML pmml = AppPMMLUtils.readPMMLFromUpdateKeyMessage(type, value, null);
 
       checkHeader(pmml.getHeader());
@@ -107,7 +106,7 @@ public final class KMeansUpdateIT extends AbstractKMeansIT {
                    clusteringModel.getComparisonMeasure().getKind());
       assertEquals(NUM_FEATURES, clusteringModel.getClusters().get(0).getArray().getN().intValue());
       for (Cluster cluster : clusteringModel.getClusters()) {
-        assertTrue(cluster.getSize() > 0);
+        assertGreater(cluster.getSize(), 0);
       }
     }
   }

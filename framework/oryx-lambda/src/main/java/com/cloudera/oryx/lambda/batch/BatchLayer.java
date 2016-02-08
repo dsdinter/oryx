@@ -18,17 +18,20 @@ package com.cloudera.oryx.lambda.batch;
 import com.google.common.base.Preconditions;
 import com.typesafe.config.Config;
 import kafka.message.MessageAndMetadata;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Writable;
 import org.apache.spark.streaming.api.java.JavaInputDStream;
 import org.apache.spark.streaming.api.java.JavaPairDStream;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import scala.Tuple2;
 
 import com.cloudera.oryx.api.batch.BatchLayerUpdate;
 import com.cloudera.oryx.api.batch.ScalaBatchLayerUpdate;
 import com.cloudera.oryx.common.lang.ClassUtils;
 import com.cloudera.oryx.lambda.AbstractSparkLayer;
+import com.cloudera.oryx.lambda.DeleteOldDataFn;
 import com.cloudera.oryx.lambda.UpdateOffsetsFn;
 
 /**
@@ -42,11 +45,14 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
 
   private static final Logger log = LoggerFactory.getLogger(BatchLayer.class);
 
+  private static final int NO_MAX_DATA_AGE = -1;
+
   private final Class<? extends Writable> keyWritableClass;
   private final Class<? extends Writable> messageWritableClass;
   private final String updateClassName;
   private final String dataDirString;
   private final String modelDirString;
+  private final int maxDataAgeHours;
   private JavaStreamingContext streamingContext;
 
   public BatchLayer(Config config) {
@@ -58,8 +64,10 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     this.updateClassName = config.getString("oryx.batch.update-class");
     this.dataDirString = config.getString("oryx.batch.storage.data-dir");
     this.modelDirString = config.getString("oryx.batch.storage.model-dir");
+    this.maxDataAgeHours = config.getInt("oryx.batch.storage.max-age-data-hours");
     Preconditions.checkArgument(!dataDirString.isEmpty());
     Preconditions.checkArgument(!modelDirString.isEmpty());
+    Preconditions.checkArgument(maxDataAgeHours >= 0 || maxDataAgeHours == NO_MAX_DATA_AGE);
   }
 
   @Override
@@ -72,6 +80,7 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     return "BatchLayer";
   }
 
+  @SuppressWarnings("deprecation") // For foreachRDD deprecated in 1.6+
   public synchronized void start() {
     String id = getID();
     if (id != null) {
@@ -79,10 +88,15 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
     }
 
     streamingContext = buildStreamingContext();
+
+    Path checkpointPath = new Path(new Path(modelDirString), ".checkpoint");
+    log.info("Setting checkpoint dir to {}", checkpointPath);
+    streamingContext.sparkContext().setCheckpointDir(checkpointPath.toString());
+
     log.info("Creating message stream from topic");
     JavaInputDStream<MessageAndMetadata<K,M>> dStream = buildInputDStream(streamingContext);
 
-    JavaPairDStream<K,M> pairDStream = dStream.mapToPair(new MMDToTuple2Fn<K,M>());
+    JavaPairDStream<K,M> pairDStream = dStream.mapToPair(km -> new Tuple2<>(km.key(), km.message()));
 
     Class<K> keyClass = getKeyClass();
     Class<M> messageClass = getMessageClass();
@@ -97,22 +111,23 @@ public final class BatchLayer<K,M,U> extends AbstractSparkLayer<K,M> {
                                   loadUpdateInstance(),
                                   streamingContext));
 
-    // Save data to HDFS. Write the original message type, not transformed.
-    JavaPairDStream<Writable,Writable> writableDStream = pairDStream.mapToPair(
-        new ValueToWritableFunction<>(keyClass,
-                                      messageClass,
-                                      keyWritableClass,
-                                      messageWritableClass));
-
     // "Inline" saveAsNewAPIHadoopFiles to be able to skip saving empty RDDs
-    writableDStream.foreachRDD(
-        new SaveToHDFSFunction(dataDirString + "/oryx",
-                               "data",
-                               keyWritableClass,
-                               messageWritableClass,
-                               streamingContext.sparkContext().hadoopConfiguration()));
+    pairDStream.foreachRDD(new SaveToHDFSFunction<>(
+        dataDirString + "/oryx",
+        "data",
+        keyClass,
+        messageClass,
+        keyWritableClass,
+        messageWritableClass,
+        streamingContext.sparkContext().hadoopConfiguration()));
 
-    dStream.foreachRDD(new UpdateOffsetsFn<K,M>(getGroupID(), getInputTopicLockMaster()));
+    dStream.foreachRDD(new UpdateOffsetsFn<>(getGroupID(), getInputTopicLockMaster()));
+
+    if (maxDataAgeHours != NO_MAX_DATA_AGE) {
+      dStream.foreachRDD(new DeleteOldDataFn<>(streamingContext.sparkContext().hadoopConfiguration(),
+                                               dataDirString,
+                                               maxDataAgeHours));
+    }
 
     log.info("Starting Spark Streaming");
 

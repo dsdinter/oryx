@@ -33,7 +33,7 @@ public final class RecommendTest extends AbstractALSServingTest {
         .accept(MediaType.APPLICATION_JSON_TYPE).get(LIST_ID_VALUE_TYPE);
     testTopByValue(6, recs, false);
     Assert.assertEquals("I1", recs.get(0).getID());
-    Assert.assertEquals(0.465396924146558, recs.get(0).getValue(), FLOAT_EPSILON);
+    Assert.assertEquals(0.4653969f, recs.get(0).getValue(), FLOAT_EPSILON);
   }
 
   @Test
@@ -73,14 +73,14 @@ public final class RecommendTest extends AbstractALSServingTest {
         .accept(MediaType.APPLICATION_JSON_TYPE).get(LIST_ID_VALUE_TYPE);
     Assert.assertEquals(3, normal.size());
     Assert.assertEquals("I2", normal.get(0).getID());
-    Assert.assertEquals(0.141347957620267, normal.get(0).getValue(), FLOAT_EPSILON);
+    Assert.assertEquals(0.14134796f, normal.get(0).getValue(), FLOAT_EPSILON);
 
     List<IDValue> withConsider = target("/recommend/U4")
         .queryParam("considerKnownItems", "true").request()
         .accept(MediaType.APPLICATION_JSON_TYPE).get(LIST_ID_VALUE_TYPE);
     Assert.assertEquals(9, withConsider.size());
     Assert.assertEquals("I7", withConsider.get(0).getID());
-    Assert.assertEquals(2.00474569593095, withConsider.get(0).getValue(), FLOAT_EPSILON);
+    Assert.assertEquals(2.0047457f, withConsider.get(0).getValue(), FLOAT_EPSILON);
   }
 
   @Test(expected = NotFoundException.class)
@@ -94,7 +94,7 @@ public final class RecommendTest extends AbstractALSServingTest {
         .accept(MediaType.APPLICATION_JSON_TYPE).get(LIST_ID_VALUE_TYPE);
     Assert.assertEquals(1, normal.size());
     Assert.assertEquals("I3", normal.get(0).getID());
-    Assert.assertEquals(2.0 * -0.2599307053020734, normal.get(0).getValue(), FLOAT_EPSILON);
+    Assert.assertEquals(2.0f * -0.2599307f, normal.get(0).getValue(), FLOAT_EPSILON);
   }
 
 }

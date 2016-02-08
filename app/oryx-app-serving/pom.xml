@@ -18,7 +18,7 @@
   <parent>
     <groupId>com.cloudera.oryx</groupId>
     <artifactId>oryx</artifactId>
-    <version>2.0.0-SNAPSHOT</version>
+    <version>2.2.0-SNAPSHOT</version>
     <relativePath>../../pom.xml</relativePath>
   </parent>
 
@@ -28,7 +28,7 @@
   <name>Apps: Oryx (Serving)</name>
   <description>Serving components of machine learning applications built from
   algorithms implemented in this project</description>
-  <version>2.0.0-SNAPSHOT</version>
+  <version>2.2.0-SNAPSHOT</version>
 
   <dependencies>
     <dependency>
@@ -174,17 +174,19 @@
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-failsafe-plugin</artifactId>
+            <version>${surefire.version}</version>
             <configuration>
               <enableAssertions>false</enableAssertions>
               <includes>
                 <include>**/*Benchmark.java</include>
               </includes>
-              <argLine>-Xmx8g</argLine>
+              <argLine>-Xmx12g -XX:+UseG1GC -XX:+UseStringDeduplication</argLine>
             </configuration>
           </plugin>
           <plugin>
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-surefire-plugin</artifactId>
+            <version>${surefire.version}</version>
             <configuration>
               <skipTests>true</skipTests>
             </configuration>

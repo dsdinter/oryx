@@ -15,7 +15,7 @@
 
 package com.cloudera.oryx.common.lang;
 
-import java.io.Closeable;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.Test;
 
@@ -26,18 +26,22 @@ public final class JVMUtilsTest extends OryxTest {
   @Test
   public void testShutdownHook() {
     // Can't really test this except to verify that no exception is thrown now or at shutdown
-    JVMUtils.closeAtShutdown(new Closeable() {
-      @Override
-      public void close() {
-        // do nothing
-      }
-    });
+    JVMUtils.closeAtShutdown(() -> {});
+  }
+
+  @Test
+  public void testRunHook() {
+    OryxShutdownHook hook = new OryxShutdownHook();
+    AtomicInteger a = new AtomicInteger();
+    hook.addCloseable(() -> a.set(3));
+    hook.run();
+    assertEquals(3, a.get());
   }
 
   @Test
   public void testUsedMemory() {
     // Reasonable guess
-    assertTrue(JVMUtils.getUsedMemory() >= 1L << 20);
+    assertGreaterOrEqual(JVMUtils.getUsedMemory(), 1L << 20);
   }
 
 }

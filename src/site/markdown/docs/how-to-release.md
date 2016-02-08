@@ -35,10 +35,10 @@ It also requires that you have the GPG key that is written into the project POM,
 
 1. Double-check that tests pass and packaging succeeds first: `mvn clean package`
 
-1. Check for problems or errors first with `-DdryRun`. Consider skipping the (lengthy) tests in these steps with `-DskipTests` if they've been run already. To avoid answering the same question many times, the release and new development versions can be supplied on the command line:
-`mvn -Darguments="-DskipTests" -DdryRun -DreleaseVersion=... -DdevelopmentVersion=... release:prepare`
-
-1. Repeat the above without `-DdryRun` but with `-Dresume=false`.
+1. Prepare the release. Consider skipping the (lengthy) tests in these steps with `-DskipTests` if they've been run 
+already. To avoid answering the same question many times, the release and new development versions can be 
+supplied on the command line:
+`mvn -Darguments="-DskipTests" -DreleaseVersion=... -DdevelopmentVersion=... release:prepare`
 
 1. Now perform the release. This will require the `gpg` passphrase for the GPG signing key specified in `pom.xml`:
 `mvn -s private-settings.xml -Darguments="-DskipTests -Dgpg.passphrase=..." release:perform`
@@ -48,7 +48,7 @@ It also requires that you have the GPG key that is written into the project POM,
 1. To get the latest changes and tags post-build, `git pull --tags`
 1. Checkout the build tag for this build with `git checkout -f tags/...`
 1. `mvn -DskipTests clean package`
-1. Assembled binaries appear at `oryx-serving/target/oryx-serving-....jar` and likewise for `speed` and `batch`
+1. Assembled binaries appear at `oryx-serving/target/oryx-serving-....jar` and likewise for `speed` and `batch`; also find the compiled example JAR at `app/example/target/example-...jar`
 1. Navigate to the Github release that was just created, at `https://github.com/OryxProject/oryx/releases/tag/...`
 1. Edit the title to something more meaningful like `Oryx x.y.z`
 1. Paste brief release notes into the description, including a link to resolved issues for the associated milestone, usually of the form `https://github.com/OryxProject/oryx/issues?q=milestone%3A...+is%3Aclosed`
@@ -56,8 +56,8 @@ It also requires that you have the GPG key that is written into the project POM,
 
 # Updating the Site
 
-1. Using the repo above, checkout the release tag: `git checkout -f tags/...`
-1. `mvn clean site:site site:stage`
+1. Using the repo above, checkout the release tag if not already: `git checkout -f tags/...`
+1. `mvn site:site site:stage`
 1. In another location, checkout the site branch into a new directory `oryx-gh-pages`:
 `git clone -b gh-pages https://github.com/OryxProject/oryx.git oryx-gh-pages`
 You may need to set `user.name` and `user.email` as above if it's a fresh clone.

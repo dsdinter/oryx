@@ -19,18 +19,14 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import net.openhft.koloboke.function.BiConsumer;
 import org.apache.commons.math3.linear.Array2DRowRealMatrix;
 import org.apache.commons.math3.linear.RealMatrix;
 import org.junit.Test;
 
 import com.cloudera.oryx.common.OryxTest;
-import com.cloudera.oryx.common.lang.LoggingVoidCallable;
+import com.cloudera.oryx.common.lang.ExecUtils;
 
 public final class FeatureVectorsTest extends OryxTest {
 
@@ -62,16 +58,11 @@ public final class FeatureVectorsTest extends OryxTest {
     FeatureVectors fv = new FeatureVectors();
     fv.setVector("foo", new float[] { 1.0f, 2.0f, 4.0f });
     fv.setVector("bar", new float[] { 1.5f, -1.0f, 0.0f });
-    final Collection<String> out = new ArrayList<>();
-    fv.forEach(new BiConsumer<String, float[]>() {
-      @Override
-      public void accept(String id, float[] vector) {
-        out.add(id + vector[0]);
-      }
-    });
+    Collection<String> out = new ArrayList<>();
+    fv.forEach((id, vector) -> out.add(id + vector[0]));
     assertEquals(fv.size(), out.size());
-    assertTrue(out.contains("foo1.0"));
-    assertTrue(out.contains("bar1.5"));
+    assertContains(out, "foo1.0");
+    assertContains(out, "bar1.5");
   }
 
   @Test
@@ -92,7 +83,7 @@ public final class FeatureVectorsTest extends OryxTest {
     fv.addAllIDsTo(allIDs);
     assertEquals(Collections.singleton("foo"), allIDs);
     fv.removeAllIDsFrom(allIDs);
-    assertTrue(allIDs.isEmpty());
+    assertEquals(0, allIDs.size());
   }
 
   @Test
@@ -105,48 +96,28 @@ public final class FeatureVectorsTest extends OryxTest {
     fv.retainRecentAndIDs(Collections.singleton("foo"));
     recentIDs.clear();
     fv.addAllRecentTo(recentIDs);
-    assertTrue(recentIDs.isEmpty());
+    assertEquals(0, recentIDs.size());
   }
 
   @Test
   public void testConcurrent() throws Exception {
-    final FeatureVectors fv = new FeatureVectors();
-    final AtomicInteger counter = new AtomicInteger();
-    int numThreads = 16;
-
-    ExecutorService executor = Executors.newFixedThreadPool(numThreads);
-    try {
-      final int numIterations = 1000;
-      Collection<Callable<Void>> adds = new ArrayList<>(numThreads);
-      for (int i = 0; i < numThreads; i++) {
-        adds.add(new LoggingVoidCallable() {
-          @Override
-          public void doCall() {
-            for (int j = 0; j < numIterations; j++) {
-              int i = counter.getAndIncrement();
-              fv.setVector(Integer.toString(i), new float[]{i});
-            }
-          }
-        });
+    FeatureVectors fv = new FeatureVectors();
+    AtomicInteger counter = new AtomicInteger();
+    int numWorkers = 16;
+    int numIterations = 10000;
+    ExecUtils.doInParallel(numWorkers, i -> {
+      for (int j = 0; j < numIterations; j++) {
+        int c = counter.getAndIncrement();
+        fv.setVector(Integer.toString(c), new float[] { c });
       }
-      executor.invokeAll(adds);
-
-      Collection<Callable<Void>> removes = new ArrayList<>(numThreads);
-      for (int i = 0; i < numThreads; i++) {
-        removes.add(new LoggingVoidCallable() {
-          @Override
-          public void doCall() {
-            for (int j = 0; j < numIterations; j++) {
-              fv.removeVector(Integer.toString(counter.decrementAndGet()));
-            }
-          }
-        });
+    });
+    assertEquals((long) numIterations * numWorkers, fv.size());
+    assertEquals((long) numIterations * numWorkers, counter.get());
+    ExecUtils.doInParallel(numWorkers, i -> {
+      for (int j = 0; j < numIterations; j++) {
+        fv.removeVector(Integer.toString(counter.decrementAndGet()));
       }
-      executor.invokeAll(removes);
-    } finally {
-      executor.shutdown();
-    }
-
+    });
     assertEquals(0, fv.size());
   }
 

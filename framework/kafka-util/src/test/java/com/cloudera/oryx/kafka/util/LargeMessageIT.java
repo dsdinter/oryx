@@ -26,13 +26,14 @@ import com.cloudera.oryx.common.OryxTest;
 import com.cloudera.oryx.common.collection.CloseableIterator;
 import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.io.IOUtils;
+import com.cloudera.oryx.common.lang.LoggingCallable;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 
 public final class LargeMessageIT extends OryxTest {
 
   private static final Logger log = LoggerFactory.getLogger(LargeMessageIT.class);
 
-  private static final String TOPIC = "OryxTest";
+  private static final String TOPIC = LargeMessageIT.class.getSimpleName() + "Topic";
   private static final int NUM_DATA = 1;
 
   @Test
@@ -65,7 +66,7 @@ public final class LargeMessageIT extends OryxTest {
 
         log.info("Starting consumer thread");
         ConsumeTopicRunnable consumeTopic = new ConsumeTopicRunnable(data, NUM_DATA);
-        new Thread(consumeTopic, "ConsumeTopicThread").start();
+        new Thread(LoggingCallable.log(consumeTopic).asRunnable(), "ConsumeTopicThread").start();
 
         consumeTopic.awaitRun();
 

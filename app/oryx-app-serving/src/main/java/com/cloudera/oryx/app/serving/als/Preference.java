@@ -27,8 +27,7 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
-import com.cloudera.oryx.app.serving.OryxServingException;
+import com.cloudera.oryx.api.serving.OryxServingException;
 
 /**
  * <p>Responds to a POST request to {@code /pref/[userID]/[itemID]}. The first line of the request
@@ -44,11 +43,12 @@ public final class Preference extends AbstractALSResource {
 
   @POST
   @Path("{userID}/{itemID}")
-  @Consumes({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Consumes({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public void post(
       @PathParam("userID") String userID,
       @PathParam("itemID") String itemID,
       Reader reader) throws IOException, OryxServingException {
+    checkNotReadOnly();
     BufferedReader bufferedReader = maybeBuffer(reader);
     String line = bufferedReader.readLine();
     String value = validateAndStandardizeStrength(line);
@@ -59,7 +59,8 @@ public final class Preference extends AbstractALSResource {
   @Path("{userID}/{itemID}")
   public void delete(
       @PathParam("userID") String userID,
-      @PathParam("itemID") String itemID) {
+      @PathParam("itemID") String itemID) throws OryxServingException {
+    checkNotReadOnly();
     sendToTopic(userID, itemID, "");
   }
 

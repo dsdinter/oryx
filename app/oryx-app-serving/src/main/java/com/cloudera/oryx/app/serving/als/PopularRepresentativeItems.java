@@ -17,16 +17,16 @@ package com.cloudera.oryx.app.serving.als;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 import javax.inject.Singleton;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 
-import com.cloudera.oryx.app.serving.OryxServingException;
-import com.cloudera.oryx.common.collection.Pair;
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
+import com.cloudera.oryx.common.collection.Pair;
 
 /**
  * <p>Responds to a GET request to {@code /popularRepresentativeItems}.</p>
@@ -43,7 +43,7 @@ import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
 public final class PopularRepresentativeItems extends AbstractALSResource {
 
   @GET
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public List<String> get() throws OryxServingException {
     ALSServingModel model = getALSServingModel();
     int features = model.getFeatures();
@@ -51,8 +51,8 @@ public final class PopularRepresentativeItems extends AbstractALSResource {
     float[] unitVector = new float[features];
     for (int i = 0; i < features; i++) {
       unitVector[i] = 1.0f;
-      List<Pair<String,Double>> topIDDot = model.topN(new DotsFunction(unitVector), null, 1, null);
-      items.add(topIDDot.isEmpty() ? null : topIDDot.get(0).getFirst());
+      Stream<Pair<String,Double>> topIDDot = model.topN(new DotsFunction(unitVector), null, 1, null);
+      items.add(topIDDot.findFirst().map(Pair::getFirst).orElse(null));
       unitVector[i] = 0.0f; // reset
     }
     return items;

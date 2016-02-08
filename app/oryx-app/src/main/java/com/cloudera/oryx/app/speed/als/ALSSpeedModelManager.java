@@ -24,15 +24,13 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.base.Preconditions;
 import com.typesafe.config.Config;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.JavaRDD;
-import org.apache.spark.api.java.function.Function;
-import org.apache.spark.api.java.function.PairFunction;
 import org.dmg.pmml.PMML;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -43,11 +41,9 @@ import com.cloudera.oryx.api.speed.SpeedModelManager;
 import com.cloudera.oryx.app.als.ALSUtils;
 import com.cloudera.oryx.app.common.fn.MLFunctions;
 import com.cloudera.oryx.app.pmml.AppPMMLUtils;
-import com.cloudera.oryx.common.math.VectorMath;
 import com.cloudera.oryx.common.text.TextUtils;
 import com.cloudera.oryx.common.math.SingularMatrixSolverException;
 import com.cloudera.oryx.common.math.Solver;
-import com.cloudera.oryx.lambda.Functions;
 
 /**
  * Implementation of {@link SpeedModelManager} that maintains and updates an ALS model in memory.
@@ -55,37 +51,42 @@ import com.cloudera.oryx.lambda.Functions;
 public final class ALSSpeedModelManager implements SpeedModelManager<String,String,String> {
 
   private static final Logger log = LoggerFactory.getLogger(ALSSpeedModelManager.class);
-  private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private ALSSpeedModel model;
-  private final boolean implicit;
   private final boolean noKnownItems;
   private final double minModelLoadFraction;
 
   public ALSSpeedModelManager(Config config) {
-    implicit = config.getBoolean("oryx.als.implicit");
     noKnownItems = config.getBoolean("oryx.als.no-known-items");
     minModelLoadFraction = config.getDouble("oryx.speed.min-model-load-fraction");
     Preconditions.checkArgument(minModelLoadFraction >= 0.0 && minModelLoadFraction <= 1.0);
   }
 
   @Override
-  public void consume(Iterator<KeyMessage<String,String>> updateIterator, Configuration hadoopConf) throws IOException {
+  public void consume(Iterator<KeyMessage<String,String>> updateIterator,
+                      Configuration hadoopConf) throws IOException {
     int countdownToLogModel = 10000;
     while (updateIterator.hasNext()) {
       KeyMessage<String,String> km = updateIterator.next();
-      String key = km.getKey();
+      String key = Objects.requireNonNull(km.getKey(), "Bad message: " + km);
       String message = km.getMessage();
-      Objects.requireNonNull(key, "Bad message: " + km);
       switch (key) {
         case "UP":
           if (model == null) {
             continue; // No model to interpret with yet, so skip it
           }
-          List<?> update = MAPPER.readValue(message, List.class);
+          // Note that here, the speed layer is actually listening for updates from
+          // two sources. First is the batch layer. This is somewhat unusual, because
+          // the batch layer usually only makes MODELs. The ALS model is too large
+          // to send in one file, so is sent as a skeleton model plus a series of updates.
+          // However it is also, neatly, listening for the same updates it produces below
+          // in response to new data, and applying them to the in-memory representation.
+          // ALS continues to be a somewhat special case here, in that it does benefit from
+          // real-time updates to even the speed layer reference model.
+          List<?> update = TextUtils.readJSON(message, List.class);
           // Update
           String id = update.get(1).toString();
-          float[] vector = MAPPER.convertValue(update.get(2), float[].class);
+          float[] vector = TextUtils.convertViaJSON(update.get(2), float[].class);
           switch (update.get(0).toString()) {
             case "X":
               model.setUserVector(id, vector);
@@ -108,10 +109,11 @@ public final class ALSSpeedModelManager implements SpeedModelManager<String,Stri
           PMML pmml = AppPMMLUtils.readPMMLFromUpdateKeyMessage(key, message, hadoopConf);
 
           int features = Integer.parseInt(AppPMMLUtils.getExtensionValue(pmml, "features"));
+          boolean implicit = Boolean.parseBoolean(AppPMMLUtils.getExtensionValue(pmml, "implicit"));
 
           if (model == null || features != model.getFeatures()) {
             log.warn("No previous model, or # features has changed; creating new one");
-            model = new ALSSpeedModel(features);
+            model = new ALSSpeedModel(features, implicit);
           }
 
           log.info("Updating model");
@@ -138,20 +140,35 @@ public final class ALSSpeedModelManager implements SpeedModelManager<String,Stri
     // Order by timestamp and parse as tuples
     JavaRDD<String> sortedValues =
         newData.values().sortBy(MLFunctions.TO_TIMESTAMP_FN, true, newData.partitions().size());
-    JavaPairRDD<Tuple2<String,String>,Double> tuples = sortedValues.mapToPair(TO_TUPLE_FN);
+    JavaPairRDD<Tuple2<String,String>,Double> tuples = sortedValues.mapToPair(line -> {
+      try {
+        String[] tokens = MLFunctions.PARSE_FN.call(line);
+        String user = tokens[0];
+        String item = tokens[1];
+        Double strength = Double.valueOf(tokens[2]);
+        return new Tuple2<>(new Tuple2<>(user, item), strength);
+      } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+        log.warn("Bad input: {}", line);
+        throw e;
+      }
+    });
 
     JavaPairRDD<Tuple2<String,String>,Double> aggregated;
-    if (implicit) {
+    if (model.isImplicit()) {
       // See comments in ALSUpdate for explanation of how deletes are handled by this.
       aggregated = tuples.groupByKey().mapValues(MLFunctions.SUM_WITH_NAN);
     } else {
       // For non-implicit, last wins.
-      aggregated = tuples.foldByKey(Double.NaN, Functions.<Double>last());
+      aggregated = tuples.foldByKey(Double.NaN, (current, next) -> next);
     }
 
     Collection<UserItemStrength> input = aggregated
-        .filter(MLFunctions.<Tuple2<String,String>>notNaNValue())
-        .map(TO_UIS_FN).collect();
+        .filter(kv -> !Double.isNaN(kv._2()))
+        .map(tuple -> {
+          Tuple2<String,String> userItem = tuple._1();
+          Double strength = tuple._2();
+          return new UserItemStrength(userItem._1(), userItem._2(), strength.floatValue());
+        }).collect();
 
     Solver XTXsolver;
     Solver YTYsolver;
@@ -162,8 +179,7 @@ public final class ALSSpeedModelManager implements SpeedModelManager<String,Stri
       return Collections.emptyList();
     }
 
-    Collection<String> result = new ArrayList<>();
-    for (UserItemStrength uis : input) {
+    return input.parallelStream().flatMap(uis -> {
       String user = uis.getUser();
       String item = uis.getItem();
       double value = uis.getStrength();
@@ -173,45 +189,22 @@ public final class ALSSpeedModelManager implements SpeedModelManager<String,Stri
       // Yi is the current row i in the Y item-feature matrix
       float[] Yi = model.getItemVector(item);
 
-      double[] newXu = newVector(YTYsolver, value, Xu, Yi);
+      float[] newXu = ALSUtils.computeUpdatedXu(YTYsolver, value, Xu, Yi, model.isImplicit());
       // Similarly for Y vs X
-      double[] newYi = newVector(XTXsolver, value, Yi, Xu);
+      float[] newYi = ALSUtils.computeUpdatedXu(XTXsolver, value, Yi, Xu, model.isImplicit());
 
+      Collection<String> result = new ArrayList<>(2);
       if (newXu != null) {
         result.add(toUpdateJSON("X", user, newXu, item));
       }
       if (newYi != null) {
         result.add(toUpdateJSON("Y", item, newYi, user));
       }
-    }
-    return result;
+      return result.stream();
+    }).collect(Collectors.toList());
   }
 
-  private double[] newVector(Solver solver, double value, float[] Xu, float[] Yi) {
-    double[] newXu = null;
-    if (Yi != null) {
-      // Let Qui = Xu * (Yi)^t -- it's the current estimate of user-item interaction
-      // in Q = X * Y^t
-      // 0.5 reflects a "don't know" state
-      double currentValue = Xu == null ? 0.5 : VectorMath.dot(Xu, Yi);
-      double targetQui = computeTargetQui(value, currentValue);
-      // The entire vector Qu' is just 0, with Qui' in position i
-      // More generally we are looking for Qu' = Xu' * Y^t
-      if (!Double.isNaN(targetQui)) {
-        // Solving Qu' = Xu' * Y^t for Xu', now that we have Qui', as:
-        // Qu' * Y * (Y^t * Yi)^-1 = Xu'
-        // Qu' is 0 except for one value at position i, so it's really (Qui')*Yi
-        float[] QuiYi = Yi.clone();
-        for (int i = 0; i < QuiYi.length; i++) {
-          QuiYi[i] *= targetQui;
-        }
-        newXu = solver.solveFToD(QuiYi);
-      }
-    }
-    return newXu;
-  }
-
-  private String toUpdateJSON(String matrix, String ID, double[] vector, String otherID) {
+  private String toUpdateJSON(String matrix, String ID, float[] vector, String otherID) {
     List<?> args;
     if (noKnownItems) {
       args = Arrays.asList(matrix, ID, vector);
@@ -220,48 +213,5 @@ public final class ALSSpeedModelManager implements SpeedModelManager<String,Stri
     }
     return TextUtils.joinJSON(args);
   }
-
-  @Override
-  public void close() {
-    // do nothing
-  }
-
-  private double computeTargetQui(double value, double currentValue) {
-    // We want Qui to change based on value. What's the target value, Qui'?
-    // Then we find a new vector Xu' such that Qui' = Xu' * (Yi)^t
-    if (implicit) {
-      return ALSUtils.implicitTargetQui(value, currentValue);
-    } else {
-      // Non-implicit -- value is supposed to be the new value
-      return value;
-    }
-  }
-
-  private static final PairFunction<String,Tuple2<String,String>,Double> TO_TUPLE_FN =
-      new PairFunction<String,Tuple2<String,String>,Double>() {
-        @Override
-        public Tuple2<Tuple2<String,String>,Double> call(String line) throws Exception {
-          try {
-            String[] tokens = MLFunctions.PARSE_FN.call(line);
-            String user = tokens[0];
-            String item = tokens[1];
-            Double strength = Double.valueOf(tokens[2]);
-            return new Tuple2<>(new Tuple2<>(user, item), strength);
-          } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
-            log.warn("Bad input: {}", line);
-            throw e;
-          }
-        }
-      };
-
-  private static final Function<Tuple2<Tuple2<String,String>,Double>,UserItemStrength> TO_UIS_FN =
-      new Function<Tuple2<Tuple2<String, String>, Double>, UserItemStrength>() {
-        @Override
-        public UserItemStrength call(Tuple2<Tuple2<String,String>,Double> tuple) {
-          Tuple2<String,String> userItem = tuple._1();
-          Double strength = tuple._2();
-          return new UserItemStrength(userItem._1(), userItem._2(), strength.floatValue());
-        }
-      };
 
 }

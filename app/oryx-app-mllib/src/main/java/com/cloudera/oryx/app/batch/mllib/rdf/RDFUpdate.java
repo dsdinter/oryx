@@ -22,21 +22,20 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import com.google.common.base.Preconditions;
-import com.google.common.util.concurrent.AtomicLongMap;
 import com.typesafe.config.Config;
+import net.openhft.koloboke.collect.map.IntLongMap;
+import net.openhft.koloboke.collect.map.hash.HashIntLongMaps;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
-import org.apache.spark.api.java.function.FlatMapFunction;
-import org.apache.spark.api.java.function.Function;
-import org.apache.spark.api.java.function.Function2;
 import org.apache.spark.mllib.linalg.Vectors;
 import org.apache.spark.mllib.regression.LabeledPoint;
 import org.apache.spark.mllib.tree.RandomForest;
@@ -68,11 +67,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import scala.collection.JavaConversions;
 
+import com.cloudera.oryx.app.classreg.example.Example;
+import com.cloudera.oryx.app.classreg.example.ExampleUtils;
 import com.cloudera.oryx.app.common.fn.MLFunctions;
 import com.cloudera.oryx.app.pmml.AppPMMLUtils;
 import com.cloudera.oryx.app.rdf.RDFPMMLUtils;
-import com.cloudera.oryx.app.rdf.ToExampleFn;
-import com.cloudera.oryx.app.rdf.example.Example;
 import com.cloudera.oryx.app.rdf.tree.DecisionForest;
 import com.cloudera.oryx.app.schema.CategoricalValueEncodings;
 import com.cloudera.oryx.app.schema.InputSchema;
@@ -137,10 +136,7 @@ public final class RDFUpdate extends MLUpdate<String> {
     categoryInfo.remove(inputSchema.getTargetFeatureIndex()); // Don't specify target count
     // Need to translate indices to predictor indices
     Map<Integer,Integer> categoryInfoByPredictor = new HashMap<>(categoryInfo.size());
-    for (Map.Entry<Integer,Integer> e : categoryInfo.entrySet()) {
-      categoryInfoByPredictor.put(inputSchema.featureToPredictorIndex(e.getKey()),
-                                  e.getValue());
-    }
+    categoryInfo.forEach((k, v) -> categoryInfoByPredictor.put(inputSchema.featureToPredictorIndex(k), v));
 
     int seed = RandomManager.getRandom().nextInt();
 
@@ -191,8 +187,9 @@ public final class RDFUpdate extends MLUpdate<String> {
     DecisionForest forest = forestAndEncoding.getFirst();
     CategoricalValueEncodings valueEncodings = forestAndEncoding.getSecond();
 
-    JavaRDD<Example> examplesRDD =
-        testData.map(MLFunctions.PARSE_FN).map(new ToExampleFn(inputSchema, valueEncodings));
+    InputSchema inputSchema = this.inputSchema;
+    JavaRDD<Example> examplesRDD = testData.map(MLFunctions.PARSE_FN).
+        map(data -> ExampleUtils.dataToExample(data, inputSchema, valueEncodings));
 
     double eval;
     if (inputSchema.isClassification()) {
@@ -208,80 +205,56 @@ public final class RDFUpdate extends MLUpdate<String> {
   }
 
   private Map<Integer,Collection<String>> getDistinctValues(JavaRDD<String[]> parsedRDD) {
-    final List<Integer> categoricalIndices = new ArrayList<>();
-    for (int i = 0; i < inputSchema.getNumFeatures(); i++) {
-      if (inputSchema.isCategorical(i)) {
-        categoricalIndices.add(i);
-      }
-    }
+    int[] categoricalIndices = IntStream.range(0, inputSchema.getNumFeatures()).
+        filter(inputSchema::isCategorical).toArray();
 
-    JavaRDD<Map<Integer,Collection<String>>> distinctValuesByPartition = parsedRDD.mapPartitions(
-        new FlatMapFunction<Iterator<String[]>, Map<Integer,Collection<String>>>() {
-          @Override
-          public Iterable<Map<Integer,Collection<String>>> call(Iterator<String[]> data) {
-            Map<Integer,Collection<String>> distinctCategoricalValues = new HashMap<>();
-            for (int i : categoricalIndices) {
-              distinctCategoricalValues.put(i, new HashSet<String>());
-            }
-            while (data.hasNext()) {
-              String[] datum = data.next();
-              for (Map.Entry<Integer,Collection<String>> e : distinctCategoricalValues.entrySet()) {
-                e.getValue().add(datum[e.getKey()]);
-              }
-            }
-            return Collections.singletonList(distinctCategoricalValues);
-          }
-        });
-
-    return distinctValuesByPartition.reduce(
-        new Function2<Map<Integer,Collection<String>>,
-                      Map<Integer,Collection<String>>,
-                      Map<Integer,Collection<String>>>() {
-          @Override
-          public Map<Integer,Collection<String>> call(Map<Integer,Collection<String>> v1,
-                                                      Map<Integer,Collection<String>> v2) {
-            for (Map.Entry<Integer,Collection<String>> e : v1.entrySet()) {
-              e.getValue().addAll(v2.get(e.getKey()));
-            }
-            return v1;
-          }
-        });
+    return parsedRDD.mapPartitions(data -> {
+        Map<Integer,Collection<String>> categoryValues = new HashMap<>();
+        for (int i : categoricalIndices) {
+          categoryValues.put(i, new HashSet<>());
+        }
+        data.forEachRemaining(datum ->
+          categoryValues.forEach((category, values) -> values.add(datum[category]))
+        );
+        return Collections.singleton(categoryValues);
+      }).reduce((v1, v2) -> {
+        // Assumes both have the same key set
+        v1.forEach((category, values) -> values.addAll(v2.get(category)));
+        return v1;
+      });
   }
 
 
   private JavaRDD<LabeledPoint> parseToLabeledPointRDD(
       JavaRDD<String[]> parsedRDD,
-      final CategoricalValueEncodings categoricalValueEncodings) {
+      CategoricalValueEncodings categoricalValueEncodings) {
 
-    return parsedRDD.map(new Function<String[],LabeledPoint>() {
-      @Override
-      public LabeledPoint call(String[] data) {
-        try {
-          double[] features = new double[inputSchema.getNumPredictors()];
-          double target = Double.NaN;
-          for (int featureIndex = 0; featureIndex < data.length; featureIndex++) {
-            double encoded;
-            if (inputSchema.isNumeric(featureIndex)) {
-              encoded = Double.parseDouble(data[featureIndex]);
-            } else if (inputSchema.isCategorical(featureIndex)) {
-              Map<String,Integer> valueEncoding =
-                  categoricalValueEncodings.getValueEncodingMap(featureIndex);
-              encoded = valueEncoding.get(data[featureIndex]);
-            } else {
-              continue;
-            }
-            if (inputSchema.isTarget(featureIndex)) {
-              target = encoded;
-            } else {
-              features[inputSchema.featureToPredictorIndex(featureIndex)] = encoded;
-            }
+    return parsedRDD.map(data -> {
+      try {
+        double[] features = new double[inputSchema.getNumPredictors()];
+        double target = Double.NaN;
+        for (int featureIndex = 0; featureIndex < data.length; featureIndex++) {
+          double encoded;
+          if (inputSchema.isNumeric(featureIndex)) {
+            encoded = Double.parseDouble(data[featureIndex]);
+          } else if (inputSchema.isCategorical(featureIndex)) {
+            Map<String,Integer> valueEncoding =
+                categoricalValueEncodings.getValueEncodingMap(featureIndex);
+            encoded = valueEncoding.get(data[featureIndex]);
+          } else {
+            continue;
           }
-          Preconditions.checkState(!Double.isNaN(target));
-          return new LabeledPoint(target, Vectors.dense(features));
-        } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
-          log.warn("Bad input: {}", Arrays.toString(data));
-          throw e;
+          if (inputSchema.isTarget(featureIndex)) {
+            target = encoded;
+          } else {
+            features[inputSchema.featureToPredictorIndex(featureIndex)] = encoded;
+          }
         }
+        Preconditions.checkState(!Double.isNaN(target));
+        return new LabeledPoint(target, Vectors.dense(features));
+      } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+        log.warn("Bad input: {}", Arrays.toString(data));
+        throw e;
       }
     });
   }
@@ -294,59 +267,38 @@ public final class RDFUpdate extends MLUpdate<String> {
    * @see #predictorExampleCounts(JavaRDD,RandomForestModel)
    */
   private static List<Map<Integer,Long>> treeNodeExampleCounts(JavaRDD<LabeledPoint> trainPointData,
-                                                               final RandomForestModel model) {
-    List<AtomicLongMap<Integer>> maps = trainPointData.mapPartitions(
-        new FlatMapFunction<Iterator<LabeledPoint>,List<AtomicLongMap<Integer>>>() {
-          @Override
-          public Iterable<List<AtomicLongMap<Integer>>> call(Iterator<LabeledPoint> data) {
-            DecisionTreeModel[] trees = model.trees();
-            int numTrees = trees.length;
-            List<AtomicLongMap<Integer>> treeNodeIDCounts = new ArrayList<>(numTrees);
-            for (int i = 0; i < numTrees; i++) {
-              treeNodeIDCounts.add(AtomicLongMap.<Integer>create());
+                                                               RandomForestModel model) {
+    return trainPointData.mapPartitions(data -> {
+        DecisionTreeModel[] trees = model.trees();
+        List<IntLongMap> treeNodeIDCounts = IntStream.range(0, trees.length).
+            mapToObj(i -> HashIntLongMaps.newMutableMap()).collect(Collectors.toList());
+        data.forEachRemaining(datum -> {
+          double[] featureVector = datum.features().toArray();
+          for (int i = 0; i < trees.length; i++) {
+            DecisionTreeModel tree = trees[i];
+            IntLongMap nodeIDCount = treeNodeIDCounts.get(i);
+            org.apache.spark.mllib.tree.model.Node node = tree.topNode();
+            // This logic cloned from Node.predict:
+            while (!node.isLeaf()) {
+              // Count node ID
+              nodeIDCount.addValue(node.id(), 1);
+              Split split = node.split().get();
+              int featureIndex = split.feature();
+              node = nextNode(featureVector, node, split, featureIndex);
             }
-            while (data.hasNext()) {
-              LabeledPoint datum = data.next();
-              double[] featureVector = datum.features().toArray();
-              for (int i = 0; i < trees.length; i++) {
-                DecisionTreeModel tree = trees[i];
-                AtomicLongMap<Integer> nodeIDCount = treeNodeIDCounts.get(i);
-                org.apache.spark.mllib.tree.model.Node node = tree.topNode();
-                // This logic cloned from Node.predict:
-                while (!node.isLeaf()) {
-                  // Count node ID
-                  nodeIDCount.incrementAndGet(node.id());
-                  Split split = node.split().get();
-                  int featureIndex = split.feature();
-                  node = nextNode(featureVector, node, split, featureIndex);
-                }
-                nodeIDCount.incrementAndGet(node.id());
-              }
-            }
-            return Collections.singleton(treeNodeIDCounts);
+            nodeIDCount.addValue(node.id(), 1);
           }
+        });
+        return Collections.<List<Map<Integer,Long>>>singleton(
+            treeNodeIDCounts.stream().map(HashMap::new).collect(Collectors.toList()));
+      }
+    ).reduce((a, b) -> {
+        Preconditions.checkArgument(a.size() == b.size());
+        for (int i = 0; i < a.size(); i++) {
+          merge(a.get(i), b.get(i));
         }
-      ).reduce(
-        new Function2<List<AtomicLongMap<Integer>>,
-                      List<AtomicLongMap<Integer>>,
-                      List<AtomicLongMap<Integer>>>() {
-          @Override
-          public List<AtomicLongMap<Integer>> call(List<AtomicLongMap<Integer>> a,
-                                                   List<AtomicLongMap<Integer>> b) {
-            Preconditions.checkArgument(a.size() == b.size());
-            for (int i = 0; i < a.size(); i++) {
-              merge(a.get(i), b.get(i));
-            }
-            return a;
-          }
-        }
-      );
-
-    List<Map<Integer,Long>> result = new ArrayList<>(maps.size());
-    for (AtomicLongMap<Integer> map : maps) {
-      result.add(map.asMap());
-    }
-    return result;
+        return a;
+      });
   }
 
   /**
@@ -358,38 +310,26 @@ public final class RDFUpdate extends MLUpdate<String> {
    *  match the one used in the {@link RandomForestModel}.
    */
   private static Map<Integer,Long> predictorExampleCounts(JavaRDD<LabeledPoint> trainPointData,
-                                                          final RandomForestModel model) {
-    return trainPointData.mapPartitions(
-        new FlatMapFunction<Iterator<LabeledPoint>,AtomicLongMap<Integer>>() {
-          @Override
-          public Iterable<AtomicLongMap<Integer>> call(Iterator<LabeledPoint> data) {
-            AtomicLongMap<Integer> featureIndexCount = AtomicLongMap.create();
-            while (data.hasNext()) {
-              LabeledPoint datum = data.next();
-              double[] featureVector = datum.features().toArray();
-              for (DecisionTreeModel tree : model.trees()) {
-                org.apache.spark.mllib.tree.model.Node node = tree.topNode();
-                // This logic cloned from Node.predict:
-                while (!node.isLeaf()) {
-                  Split split = node.split().get();
-                  int featureIndex = split.feature();
-                  // Count feature
-                  featureIndexCount.incrementAndGet(featureIndex);
-                  node = nextNode(featureVector, node, split, featureIndex);
-                }
-              }
+                                                          RandomForestModel model) {
+    return trainPointData.mapPartitions(data -> {
+        IntLongMap featureIndexCount = HashIntLongMaps.newMutableMap();
+        data.forEachRemaining(datum -> {
+          double[] featureVector = datum.features().toArray();
+          for (DecisionTreeModel tree : model.trees()) {
+            org.apache.spark.mllib.tree.model.Node node = tree.topNode();
+            // This logic cloned from Node.predict:
+            while (!node.isLeaf()) {
+              Split split = node.split().get();
+              int featureIndex = split.feature();
+              // Count feature
+              featureIndexCount.addValue(featureIndex, 1);
+              node = nextNode(featureVector, node, split, featureIndex);
             }
-            return Collections.singleton(featureIndexCount);
           }
-        }
-      ).reduce(
-        new Function2<AtomicLongMap<Integer>,AtomicLongMap<Integer>,AtomicLongMap<Integer>>() {
-          @Override
-          public AtomicLongMap<Integer> call(AtomicLongMap<Integer> a, AtomicLongMap<Integer> b) {
-            return merge(a, b);
-          }
-        }
-      ).asMap();
+        });
+        // Clone to avoid problem with Kryo serializing Koloboke
+        return Collections.<Map<Integer,Long>>singleton(new HashMap<>(featureIndexCount));
+    }).reduce(RDFUpdate::merge);
   }
 
   private static org.apache.spark.mllib.tree.model.Node nextNode(
@@ -413,11 +353,17 @@ public final class RDFUpdate extends MLUpdate<String> {
     }
   }
 
-  private static AtomicLongMap<Integer> merge(AtomicLongMap<Integer> a, AtomicLongMap<Integer> b) {
-    for (Map.Entry<Integer,Long> e : b.asMap().entrySet()) {
-      a.addAndGet(e.getKey(), e.getValue());
+  private static <T> Map<T,Long> merge(Map<T,Long> a, Map<T,Long> b) {
+    if (b.size() > a.size()) {
+      return merge(b, a);
     }
+    b.forEach((key, value) -> a.merge(key, value, (x, y) -> x + y));
     return a;
+  }
+
+  private static <T> long get(Map<T,Long> map, T key) {
+    Long count = map.get(key);
+    return count == null ? 0L : count;
   }
 
   private PMML rdfModelToPMML(RandomForestModel rfModel,
@@ -466,7 +412,7 @@ public final class RDFUpdate extends MLUpdate<String> {
 
     PMML pmml = PMMLUtils.buildSkeletonPMML();
     pmml.setDataDictionary(dictionary);
-    pmml.getModels().add(model);
+    pmml.addModels(model);
 
     AppPMMLUtils.addExtension(pmml, "maxDepth", maxDepth);
     AppPMMLUtils.addExtension(pmml, "maxSplitCandidates", maxSplitCandidates);
@@ -503,7 +449,7 @@ public final class RDFUpdate extends MLUpdate<String> {
       modelNode.setPredicate(predicate);
 
       org.apache.spark.mllib.tree.model.Node treeNode = treeNodePredicate.getFirst();
-      long nodeCount = nodeIDCounts.get(treeNode.id());
+      long nodeCount = get(nodeIDCounts, treeNode.id());
       modelNode.setRecordCount((double) nodeCount);
 
       if (treeNode.isLeaf()) {
@@ -513,16 +459,25 @@ public final class RDFUpdate extends MLUpdate<String> {
         if (classificationTask) {
           Map<Integer,String> targetEncodingToValue =
               categoricalValueEncodings.getEncodingValueMap(inputSchema.getTargetFeatureIndex());
-          String predictedCategoricalValue = targetEncodingToValue.get(targetEncodedValue);
-          double confidence = prediction.prob();
-          Preconditions.checkState(confidence >= 0.0 && confidence <= 1.0);
-          // Slightly faked 'record' count; taken as the probability of the positive class
-          // times record count at the node
-          long pseudoSDRecordCount = Math.round(confidence * nodeCount);
-          ScoreDistribution distribution =
-              new ScoreDistribution(predictedCategoricalValue, pseudoSDRecordCount);
-          distribution.setConfidence(confidence);
-          modelNode.getScoreDistributions().add(distribution);
+          double predictedProbability = prediction.prob();
+          Preconditions.checkState(predictedProbability >= 0.0 && predictedProbability <= 1.0);
+          // Not sure how nodeCount == 0 can happen but it does in the MLlib model
+          long effectiveNodeCount = Math.max(1, nodeCount);
+          // Problem: MLlib only gives a predicted class and its probability, and no distribution
+          // over the rest. Infer that the rest of the probability is evenly distributed.
+          double restProbability = (1.0 - predictedProbability) / (targetEncodingToValue.size() - 1);
+
+          targetEncodingToValue.forEach((encodedValue, value) -> {
+            double probability = encodedValue == targetEncodedValue ? predictedProbability : restProbability;
+            // Yes, recordCount may be fractional; it's a relative indicator
+            double recordCount = probability * effectiveNodeCount;
+            if (recordCount > 0.0) {
+              ScoreDistribution distribution = new ScoreDistribution(value, recordCount);
+              // Not "confident" enough in the "probability" to call it one
+              distribution.setConfidence(probability);
+              modelNode.addScoreDistributions(distribution);
+            }
+          });
         } else {
           modelNode.setScore(Double.toString(targetEncodedValue));
         }
@@ -532,17 +487,14 @@ public final class RDFUpdate extends MLUpdate<String> {
         Split split = treeNode.split().get();
 
         Node positiveModelNode = new Node().setId(modelNode.getId() + '+');
-        modelNode.getNodes().add(positiveModelNode);
         Node negativeModelNode = new Node().setId(modelNode.getId() + '-');
-        modelNode.getNodes().add(negativeModelNode);
+        modelNode.addNodes(positiveModelNode, negativeModelNode);
 
         org.apache.spark.mllib.tree.model.Node rightTreeNode = treeNode.rightNode().get();
         org.apache.spark.mllib.tree.model.Node leftTreeNode = treeNode.leftNode().get();
 
-        boolean defaultRight =
-            nodeIDCounts.get(rightTreeNode.id()) > nodeIDCounts.get(leftTreeNode.id());
-        modelNode.setDefaultChild(
-            defaultRight ? positiveModelNode.getId() : negativeModelNode.getId());
+        boolean defaultRight = get(nodeIDCounts, rightTreeNode.id()) > get(nodeIDCounts, leftTreeNode.id());
+        modelNode.setDefaultChild(defaultRight ? positiveModelNode.getId() : negativeModelNode.getId());
 
         // Right node is "positive", so carries the predicate. It must evaluate first
         // and therefore come first in the tree
@@ -579,17 +531,11 @@ public final class RDFUpdate extends MLUpdate<String> {
       @SuppressWarnings("unchecked")
       List<Double> javaCategories = (List<Double>) (List<?>)
           JavaConversions.seqAsJavaList(split.categories());
-      Set<Integer> negativeEncodings = new HashSet<>(javaCategories.size());
-      for (double category : javaCategories) {
-        negativeEncodings.add((int) category);
-      }
+      Set<Integer> negativeEncodings = javaCategories.stream().map(Double::intValue).collect(Collectors.toSet());
 
       Map<Integer,String> encodingToValue =
           categoricalValueEncodings.getEncodingValueMap(featureIndex);
-      List<String> negativeValues = new ArrayList<>();
-      for (int negativeEncoding : negativeEncodings) {
-        negativeValues.add(encodingToValue.get(negativeEncoding));
-      }
+      List<String> negativeValues = negativeEncodings.stream().map(encodingToValue::get).collect(Collectors.toList());
 
       String joinedValues = TextUtils.joinPMMLDelimited(negativeValues);
       return new SimpleSetPredicate(fieldName,
@@ -605,14 +551,9 @@ public final class RDFUpdate extends MLUpdate<String> {
 
   private double[] countsToImportances(Map<Integer,Long> predictorIndexCounts) {
     double[] importances = new double[inputSchema.getNumPredictors()];
-    long total = 0L;
-    for (long count : predictorIndexCounts.values()) {
-      total += count;
-    }
+    long total = predictorIndexCounts.values().stream().collect(Collectors.summingLong(l -> l));
     Preconditions.checkArgument(total > 0);
-    for (Map.Entry<Integer,Long> e : predictorIndexCounts.entrySet()) {
-      importances[e.getKey()] = (double) e.getValue() / total;
-    }
+    predictorIndexCounts.forEach((k, count) -> importances[k] = (double) count / total);
     return importances;
   }
 

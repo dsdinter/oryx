@@ -17,8 +17,9 @@ package com.cloudera.oryx.app.serving.als;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
 import javax.inject.Singleton;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -29,17 +30,13 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 
 import net.openhft.koloboke.function.ObjDoubleToDoubleFunction;
-import net.openhft.koloboke.function.Predicate;
 
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.als.Rescorer;
 import com.cloudera.oryx.app.als.RescorerProvider;
-import com.cloudera.oryx.common.collection.NotContainsPredicate;
-import com.cloudera.oryx.common.collection.Pair;
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
 import com.cloudera.oryx.app.serving.IDValue;
-import com.cloudera.oryx.app.serving.OryxServingException;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
-import com.cloudera.oryx.common.collection.Predicates;
+import com.cloudera.oryx.common.collection.Pair;
 
 /**
  * <p>Responds to a GET request to
@@ -73,7 +70,7 @@ public final class Recommend extends AbstractALSResource {
 
   @GET
   @Path("{userID}")
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public List<IDValue> get(
       @PathParam("userID") String userID,
       @DefaultValue("10") @QueryParam("howMany") int howMany,
@@ -91,13 +88,8 @@ public final class Recommend extends AbstractALSResource {
     Predicate<String> allowedFn = null;
     if (!considerKnownItems) {
       Collection<String> knownItems = model.getKnownItems(userID);
-      if (knownItems != null) {
-        synchronized (knownItems) {
-          if (!knownItems.isEmpty()) {
-            // Must copy since knownItems is synchronized
-            allowedFn = new NotContainsPredicate<>(new HashSet<>(knownItems));
-          }
-        }
+      if (!knownItems.isEmpty()) {
+        allowedFn = v -> !knownItems.contains(v);
       }
     }
 
@@ -107,12 +99,13 @@ public final class Recommend extends AbstractALSResource {
       Rescorer rescorer = rescorerProvider.getRecommendRescorer(Collections.singletonList(userID),
                                                                 rescorerParams);
       if (rescorer != null) {
-        allowedFn = Predicates.and(allowedFn, buildRescorerPredicate(rescorer));
-        rescoreFn = buildRescoreFn(rescorer);
+        Predicate<String> rescorerPredicate = id -> !rescorer.isFiltered(id);
+        allowedFn = allowedFn == null ? rescorerPredicate : allowedFn.and(rescorerPredicate);
+        rescoreFn = rescorer::rescore;
       }
     }
 
-    List<Pair<String,Double>> topIDDots = model.topN(
+    Stream<Pair<String,Double>> topIDDots = model.topN(
         new DotsFunction(userVector),
         rescoreFn,
         howMany + offset,

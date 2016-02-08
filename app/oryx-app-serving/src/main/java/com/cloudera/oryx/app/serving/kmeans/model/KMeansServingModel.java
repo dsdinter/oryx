@@ -22,15 +22,16 @@ import java.util.Objects;
 import com.cloudera.oryx.app.kmeans.ClusterInfo;
 import com.cloudera.oryx.app.kmeans.DistanceFn;
 import com.cloudera.oryx.app.kmeans.KMeansUtils;
-import com.cloudera.oryx.app.kmeans.SquaredDistanceFn;
+import com.cloudera.oryx.app.kmeans.EuclideanDistanceFn;
 import com.cloudera.oryx.app.schema.InputSchema;
+import com.cloudera.oryx.app.serving.clustering.model.ClusteringServingModel;
 import com.cloudera.oryx.common.collection.Pair;
 
 /**
  * Contains all data structures needed to serve queries for a
  * k-means clustering application.
  */
-public final class KMeansServingModel {
+public final class KMeansServingModel implements ClusteringServingModel {
 
   private final List<ClusterInfo> clusters;
   private final InputSchema inputSchema;
@@ -42,7 +43,15 @@ public final class KMeansServingModel {
     KMeansUtils.checkUniqueIDs(clusters);
     this.clusters = Collections.synchronizedList(clusters);
     this.inputSchema = inputSchema;
-    distanceFn = new SquaredDistanceFn(); // For now, this is the only thing supported
+    distanceFn = new EuclideanDistanceFn(); // For now, this is the only thing supported
+  }
+
+  @Override
+  public int nearestClusterID(String[] datum) {
+    if (datum.length != inputSchema.getNumFeatures()) {
+      throw new IllegalArgumentException("Wrong number of features");
+    }
+    return closestCluster(KMeansUtils.featuresFromTokens(datum, inputSchema)).getFirst().getID();
   }
 
   public int getNumClusters() {
@@ -63,6 +72,11 @@ public final class KMeansServingModel {
 
   public void update(int clusterID, double[] center, long count) {
     clusters.set(clusterID, new ClusterInfo(clusterID, center, count));
+  }
+
+  @Override
+  public float getFractionLoaded() {
+    return 1.0f;
   }
 
   @Override

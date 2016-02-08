@@ -21,6 +21,7 @@ import com.google.common.base.Preconditions;
 import net.openhft.koloboke.collect.set.ObjSet;
 import net.openhft.koloboke.collect.set.hash.HashObjSets;
 
+import com.cloudera.oryx.api.speed.SpeedModel;
 import com.cloudera.oryx.app.als.FeatureVectors;
 import com.cloudera.oryx.common.lang.AutoLock;
 import com.cloudera.oryx.common.lang.AutoReadWriteLock;
@@ -31,7 +32,7 @@ import com.cloudera.oryx.common.math.Solver;
  * Contains all data structures needed to create near-real-time updates for an
  * ALS-based recommender.
  */
-public final class ALSSpeedModel {
+public final class ALSSpeedModel implements SpeedModel {
 
   /** User-feature matrix. */
   private final FeatureVectors X;
@@ -41,15 +42,18 @@ public final class ALSSpeedModel {
   private final AutoReadWriteLock expectedUserIDsLock;
   private final ObjSet<String> expectedItemIDs;
   private final AutoReadWriteLock expectedItemIDsLock;
-  /** Whether model uses implicit feedback. */
+  /** Number of features used in the model. */
   private final int features;
+  /** Whether model uses implicit feedback. */
+  private final boolean implicit;
 
   /**
    * Creates an empty model.
    *
    * @param features number of features expected for user/item feature vectors
+   * @param implicit whether model implements implicit feedback
    */
-  ALSSpeedModel(int features) {
+  ALSSpeedModel(int features, boolean implicit) {
     Preconditions.checkArgument(features > 0);
     X = new FeatureVectors();
     Y = new FeatureVectors();
@@ -58,10 +62,15 @@ public final class ALSSpeedModel {
     expectedItemIDs = HashObjSets.newMutableSet();
     expectedItemIDsLock = new AutoReadWriteLock();
     this.features = features;
+    this.implicit = implicit;
   }
 
   public int getFeatures() {
     return features;
+  }
+
+  public boolean isImplicit() {
+    return implicit;
   }
 
   public float[] getUserVector(String user) {
@@ -107,17 +116,16 @@ public final class ALSSpeedModel {
   }
 
   public Solver getXTXSolver() {
+    // Not cached now, since the way it is used now, it is accessed once per batch of input anyway
     return LinearSystemSolver.getSolver(X.getVTV());
   }
 
   public Solver getYTYSolver() {
+    // Not cached now, since the way it is used now, it is accessed once per batch of input anyway
     return LinearSystemSolver.getSolver(Y.getVTV());
   }
 
-  /**
-   * @return fraction of IDs that were expected to be in the model whose value has been
-   *  loaded from an update
-   */
+  @Override
   public float getFractionLoaded() {
     int expected = 0;
     try (AutoLock al = expectedUserIDsLock.autoReadLock()) {
@@ -135,7 +143,7 @@ public final class ALSSpeedModel {
 
   @Override
   public String toString() {
-    return "ALSSpeedModel[features:" + features +
+    return "ALSSpeedModel[features:" + features + ", implicit:" + implicit +
         ", X:(" + X.size() + " users), Y:(" + Y.size() + " items), fractionLoaded:" +
         getFractionLoaded() + "]";
   }

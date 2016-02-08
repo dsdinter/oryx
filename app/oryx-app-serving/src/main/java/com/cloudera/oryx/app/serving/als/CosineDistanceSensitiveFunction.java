@@ -15,7 +15,7 @@
 
 package com.cloudera.oryx.app.serving.als;
 
-import net.openhft.koloboke.function.ToDoubleFunction;
+import java.util.function.ToDoubleFunction;
 
 /**
  * Implementations of this type of function return a value that depends on
@@ -27,6 +27,6 @@ public interface CosineDistanceSensitiveFunction extends ToDoubleFunction<float[
   /**
    * @return vector whose cosine distance to other vectors influence the function value
    */
-  double[] getTargetVector();
+  float[] getTargetVector();
 
 }

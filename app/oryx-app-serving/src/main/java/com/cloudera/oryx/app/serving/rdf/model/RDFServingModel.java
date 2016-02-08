@@ -15,17 +15,23 @@
 
 package com.cloudera.oryx.app.serving.rdf.model;
 
+import java.util.Map;
 import java.util.Objects;
 
+import com.cloudera.oryx.app.classreg.example.ExampleUtils;
+import com.cloudera.oryx.app.classreg.predict.CategoricalPrediction;
+import com.cloudera.oryx.app.classreg.predict.NumericPrediction;
+import com.cloudera.oryx.app.classreg.predict.Prediction;
 import com.cloudera.oryx.app.rdf.tree.DecisionForest;
 import com.cloudera.oryx.app.schema.CategoricalValueEncodings;
 import com.cloudera.oryx.app.schema.InputSchema;
+import com.cloudera.oryx.app.serving.classreg.model.ClassificationRegressionServingModel;
 
 /**
  * Contains all data structures needed to serve queries for a
  * random decision forest-based classifier or regressor.
  */
-public final class RDFServingModel {
+public final class RDFServingModel implements ClassificationRegressionServingModel {
 
   private final DecisionForest forest;
   private final CategoricalValueEncodings encodings;
@@ -42,6 +48,27 @@ public final class RDFServingModel {
     this.inputSchema = inputSchema;
   }
 
+  @Override
+  public String predict(String[] example) {
+    Prediction prediction = makePrediction(example);
+    if (inputSchema.isClassification()) {
+      int targetIndex = inputSchema.getTargetFeatureIndex();
+      Map<Integer,String> targetEncodingName = encodings.getEncodingValueMap(targetIndex);
+      int mostProbable = ((CategoricalPrediction) prediction).getMostProbableCategoryEncoding();
+      return targetEncodingName.get(mostProbable);
+    } else {
+      double score = ((NumericPrediction) prediction).getPrediction();
+      return Double.toString(score);
+    }
+  }
+
+  public Prediction makePrediction(String[] example) {
+    if (example.length != inputSchema.getNumFeatures()) {
+      throw new IllegalArgumentException("Wrong number of features");
+    }
+    return forest.predict(ExampleUtils.dataToExample(example, inputSchema, encodings));
+  }
+
   public DecisionForest getForest() {
     return forest;
   }
@@ -52,6 +79,11 @@ public final class RDFServingModel {
 
   public InputSchema getInputSchema() {
     return inputSchema;
+  }
+
+  @Override
+  public float getFractionLoaded() {
+    return 1.0f;
   }
 
   @Override

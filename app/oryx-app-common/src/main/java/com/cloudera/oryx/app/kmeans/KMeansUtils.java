@@ -16,9 +16,7 @@
 package com.cloudera.oryx.app.kmeans;
 
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import com.google.common.base.Preconditions;
 
@@ -46,7 +44,7 @@ public final class KMeansUtils {
     double closestDist = Double.POSITIVE_INFINITY;
     ClusterInfo minCluster = null;
     for (ClusterInfo cluster : clusters) {
-      double distance = distanceFn.distance(cluster.getCenter(), vector);
+      double distance = distanceFn.applyAsDouble(cluster.getCenter(), vector);
       if (distance < closestDist) {
         closestDist = distance;
         minCluster = cluster;
@@ -78,10 +76,7 @@ public final class KMeansUtils {
    * @throws IllegalArgumentException if any {@link ClusterInfo#getID()} is duplicated
    */
   public static void checkUniqueIDs(Collection<ClusterInfo> clusters) {
-    Set<Integer> uniqueIDs = new HashSet<>();
-    for (ClusterInfo cluster : clusters) {
-      Preconditions.checkArgument(uniqueIDs.add(cluster.getID()));
-    }
+    Preconditions.checkArgument(clusters.stream().map(ClusterInfo::getID).distinct().count() == clusters.size());
   }
 
 }

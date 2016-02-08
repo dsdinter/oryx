@@ -17,10 +17,10 @@ package com.cloudera.oryx.app.rdf.decision;
 
 import org.junit.Test;
 
-import com.cloudera.oryx.app.rdf.example.Example;
-import com.cloudera.oryx.app.rdf.example.Feature;
-import com.cloudera.oryx.app.rdf.example.FeatureType;
-import com.cloudera.oryx.app.rdf.example.NumericFeature;
+import com.cloudera.oryx.app.classreg.example.Example;
+import com.cloudera.oryx.app.classreg.example.Feature;
+import com.cloudera.oryx.app.classreg.example.FeatureType;
+import com.cloudera.oryx.app.classreg.example.NumericFeature;
 import com.cloudera.oryx.common.OryxTest;
 
 /**
@@ -45,6 +45,23 @@ public final class NumericDecisionTest extends OryxTest {
     assertTrue(decision.isPositive(new Example(null, NumericFeature.forValue(-3.0))));
     assertTrue(decision.isPositive(new Example(null, NumericFeature.forValue(3.1))));
     assertTrue(decision.isPositive(new Example(null, new Feature[] {null})));
+  }
+
+  @Test
+  public void testToString() {
+    NumericDecision decision = new NumericDecision(0, 0.5, true);
+    assertEquals("(#0 >= 0.5)", decision.toString());
+  }
+
+  @Test
+  public void testEqualsHashCode() {
+    NumericDecision a = new NumericDecision(0, 0.5, true);
+    NumericDecision b = new NumericDecision(0, 0.5, true);
+    NumericDecision c = new NumericDecision(1, 0.5, true);
+    assertEquals(a, b);
+    assertNotEquals(a, c);
+    assertEquals(a.hashCode(), b.hashCode());
+    assertNotEquals(a.hashCode(), c.hashCode());
   }
 
 }

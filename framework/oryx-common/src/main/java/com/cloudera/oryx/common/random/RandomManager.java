@@ -31,7 +31,7 @@ public final class RandomManager {
   private static final long TEST_SEED = getTestSeed();
 
   private static final Reference<? extends Collection<RandomGenerator>> INSTANCES =
-      new SoftReference<>(new ArrayList<RandomGenerator>());
+      new SoftReference<>(new ArrayList<>());
   private static boolean useTestSeed;
 
   private RandomManager() {
@@ -54,6 +54,10 @@ public final class RandomManager {
       // No need to track instances anymore
       return new Well19937c(TEST_SEED);
     }
+    return getUnseededRandom();
+  }
+
+  static RandomGenerator getUnseededRandom() {
     RandomGenerator random = new Well19937c();
     Collection<RandomGenerator> instances = INSTANCES.get();
     if (instances != null) {
@@ -62,6 +66,16 @@ public final class RandomManager {
       }
     } // else oh well, only matters in tests
     return random;
+  }
+
+  /**
+   * @param seed explicit seed for random number generator
+   * @return a new, seeded {@link RandomGenerator}
+   */
+  public static RandomGenerator getRandom(long seed) {
+    // Don't track these or use the test seed as the caller has manually specified
+    // the seeding behavior
+    return new Well19937c(seed);
   }
 
   /**
@@ -74,9 +88,7 @@ public final class RandomManager {
     Collection<RandomGenerator> instances = INSTANCES.get();
     if (instances != null) {
       synchronized (instances) {
-        for (RandomGenerator random : instances) {
-          random.setSeed(TEST_SEED);
-        }
+        instances.forEach(random -> random.setSeed(TEST_SEED));
         instances.clear();
       }
       INSTANCES.clear();

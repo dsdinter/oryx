@@ -25,9 +25,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.cloudera.oryx.api.TopicProducer;
-import com.cloudera.oryx.app.serving.AbstractOryxResource;
+import com.cloudera.oryx.api.serving.OryxResource;
 import com.cloudera.oryx.common.collection.CloseableIterator;
 import com.cloudera.oryx.common.collection.Pair;
+import com.cloudera.oryx.common.lang.LoggingCallable;
 import com.cloudera.oryx.common.settings.ConfigUtils;
 import com.cloudera.oryx.kafka.util.ConsumeData;
 import com.cloudera.oryx.kafka.util.ConsumeTopicRunnable;
@@ -50,8 +51,7 @@ public final class ALSServingInputProducerIT extends AbstractServingIT {
 
     @SuppressWarnings("unchecked")
     TopicProducer<String,String> inputProducer = (TopicProducer<String,String>)
-        getServingLayer().getContext().getServletContext().getAttribute(
-            AbstractOryxResource.INPUT_PRODUCER_KEY);
+        getServingLayer().getContext().getServletContext().getAttribute(OryxResource.INPUT_PRODUCER_KEY);
 
     String[] inputs = {
         "abc,123,1.5",
@@ -65,7 +65,7 @@ public final class ALSServingInputProducerIT extends AbstractServingIT {
 
       log.info("Starting consumer thread");
       ConsumeTopicRunnable consumeInput = new ConsumeTopicRunnable(data, inputs.length);
-      new Thread(consumeInput, "ConsumeInputThread").start();
+      new Thread(LoggingCallable.log(consumeInput).asRunnable(), "ConsumeInputThread").start();
 
       consumeInput.awaitRun();
 

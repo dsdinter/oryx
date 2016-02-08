@@ -32,7 +32,6 @@ import javax.ws.rs.core.GenericType;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import com.google.common.base.Joiner;
 import com.typesafe.config.Config;
 import org.apache.hadoop.conf.Configuration;
 import org.glassfish.jersey.client.ClientConfig;
@@ -48,7 +47,7 @@ import org.junit.Assert;
 import org.junit.Before;
 
 import com.cloudera.oryx.api.KeyMessage;
-import com.cloudera.oryx.api.serving.ServingModelManager;
+import com.cloudera.oryx.api.serving.AbstractServingModelManager;
 import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.lang.ClassUtils;
 import com.cloudera.oryx.common.random.RandomManager;
@@ -92,7 +91,8 @@ public abstract class AbstractServingTest extends JerseyTest {
   @Override
   protected final DeploymentContext configureDeployment() {
     configureProperties();
-    String joinedPackages = Joiner.on(',').join(getResourcePackages());
+    String joinedPackages = String.join(",", getResourcePackages()) +
+        ",com.cloudera.oryx.lambda.serving";
     return ServletDeploymentContext.builder(OryxApplication.class)
         .initParam("javax.ws.rs.Application", OryxApplication.class.getName())
         .contextParam(OryxApplication.class.getName() + ".packages", joinedPackages)
@@ -169,22 +169,13 @@ public abstract class AbstractServingTest extends JerseyTest {
   }
 
   protected abstract static class AbstractMockServingModelManager
-      implements ServingModelManager<String> {
-    private final Config config;
+      extends AbstractServingModelManager<String> {
     protected AbstractMockServingModelManager(Config config) {
-      this.config = config;
+      super(config);
     }
     @Override
     public final void consume(Iterator<KeyMessage<String, String>> updateIterator, Configuration hadoopConf) {
       throw new UnsupportedOperationException();
-    }
-    @Override
-    public final Config getConfig() {
-      return config;
-    }
-    @Override
-    public final void close() {
-      // do nothing
     }
   }
 

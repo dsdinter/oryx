@@ -30,6 +30,7 @@ import com.cloudera.oryx.app.pmml.AppPMMLUtils;
 import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.pmml.PMMLUtils;
 import com.cloudera.oryx.common.settings.ConfigUtils;
+import com.cloudera.oryx.common.text.TextUtils;
 import com.cloudera.oryx.lambda.speed.AbstractSpeedIT;
 
 public final class ALSSpeedIT extends AbstractSpeedIT {
@@ -53,9 +54,7 @@ public final class ALSSpeedIT extends AbstractSpeedIT {
                                         9, 10);
 
     if (log.isDebugEnabled()) {
-      for (Pair<String, String> update : updates) {
-        log.debug("{}", update);
-      }
+      updates.forEach(update -> log.debug("{}", update));
     }
 
     // 10 original updates. 9 generate just 1 update since user or item is new.
@@ -66,17 +65,16 @@ public final class ALSSpeedIT extends AbstractSpeedIT {
 
     for (int i = 1; i <= 9; i++) {
       assertEquals("UP", updates.get(i).getFirst());
-      List<?> update = MAPPER.readValue(updates.get(i).getSecond(), List.class);
+      List<?> update = TextUtils.readJSON(updates.get(i).getSecond(), List.class);
       boolean isX = "X".equals(update.get(0).toString());
       String id = update.get(1).toString();
       float[] expected = (isX ? MockALSModelUpdateGenerator.X : MockALSModelUpdateGenerator.Y).get(id);
-      assertArrayEquals(expected, MAPPER.convertValue(update.get(2), float[].class));
+      assertArrayEquals(expected, TextUtils.convertViaJSON(update.get(2), float[].class));
       @SuppressWarnings("unchecked")
       Collection<String> knownUsersItems = (Collection<String>) update.get(3);
       Collection<String> expectedKnownUsersItems =
           (isX ? MockALSModelUpdateGenerator.A : MockALSModelUpdateGenerator.At).get(id);
-      assertTrue(knownUsersItems.containsAll(expectedKnownUsersItems));
-      assertTrue(expectedKnownUsersItems.containsAll(knownUsersItems));
+      assertContainsSame(knownUsersItems, expectedKnownUsersItems);
     }
 
     /*
@@ -86,27 +84,27 @@ public final class ALSSpeedIT extends AbstractSpeedIT {
      * Likewise 105 - 108 are (0.75*eye(4))*X*pinv(X'*X)
      */
 
-    Map<String,float[]> X = MockALSModelUpdateGenerator.buildMatrix(100, new double[][]{
-        {-0.2085992442067743, 0.2523213360207475},
-        {-0.2247280310573082, -0.1929485017146139},
-        {-0.1559213545536042, 0.3977631145260019},
-        {-0.3006521945941331, -0.1223970296839849},
-        {-0.0920529503873587, -0.3747183657047325},
+    Map<String,float[]> X = MockALSModelUpdateGenerator.buildMatrix(100, new float[][]{
+        {-0.20859924f,  0.25232133f},
+        {-0.22472803f, -0.1929485f},
+        {-0.15592135f,  0.3977631f},
+        {-0.3006522f,  -0.12239703f},
+        {-0.09205295f, -0.37471837f},
     });
-    Map<String,float[]> Y = MockALSModelUpdateGenerator.buildMatrix(105, new double[][]{
-        {-0.1966328800604910, 0.0957410625834965},
-        {-0.2384041642283309, -0.5085072425781164},
-        {-0.3436097549067730, 0.2466687004987837},
-        {-0.0602045721873638, 0.2931111530627041},
+    Map<String,float[]> Y = MockALSModelUpdateGenerator.buildMatrix(105, new float[][]{
+        {-0.19663288f,  0.09574106f},
+        {-0.23840417f, -0.50850725f},
+        {-0.34360975f,  0.2466687f},
+        {-0.060204573f, 0.29311115f},
     });
 
     for (int i = 10; i <= 18; i++) {
       assertEquals("UP", updates.get(i).getFirst());
-      List<?> update = MAPPER.readValue(updates.get(i).getSecond(), List.class);
+      List<?> update = TextUtils.readJSON(updates.get(i).getSecond(), List.class);
       boolean isX = "X".equals(update.get(0).toString());
       String id = update.get(1).toString();
       float[] expected = (isX ? X : Y).get(id);
-      assertArrayEquals(expected, MAPPER.convertValue(update.get(2), float[].class), 1.0e-5f);
+      assertArrayEquals(expected, TextUtils.convertViaJSON(update.get(2), float[].class), 1.0e-5f);
       String otherID = ALSUtilsTest.idToStringID(ALSUtilsTest.stringIDtoID(id) - 99);
       @SuppressWarnings("unchecked")
       Collection<String> knownUsersItems = (Collection<String>) update.get(3);

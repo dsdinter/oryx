@@ -17,6 +17,7 @@ package com.cloudera.oryx.app.serving.als;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Stream;
 import javax.inject.Singleton;
 import javax.ws.rs.DefaultValue;
 import javax.ws.rs.GET;
@@ -26,17 +27,12 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.MediaType;
 
-import com.google.common.base.Function;
-import com.google.common.collect.Iterables;
-import com.google.common.collect.Ordering;
-
-import com.cloudera.oryx.common.collection.Pair;
-import com.cloudera.oryx.common.collection.PairComparators;
-import com.cloudera.oryx.common.math.VectorMath;
-import com.cloudera.oryx.app.serving.CSVMessageBodyWriter;
+import com.cloudera.oryx.api.serving.OryxServingException;
 import com.cloudera.oryx.app.serving.IDValue;
-import com.cloudera.oryx.app.serving.OryxServingException;
 import com.cloudera.oryx.app.serving.als.model.ALSServingModel;
+import com.cloudera.oryx.common.collection.Pair;
+import com.cloudera.oryx.common.collection.Pairs;
+import com.cloudera.oryx.common.math.VectorMath;
 
 /**
  * <p>Responds to a GET request to {@code /because/[userID]/[itemID](?howMany=n)(&offset=o)}.</p>
@@ -57,7 +53,7 @@ public final class Because extends AbstractALSResource {
 
   @GET
   @Path("{userID}/{itemID}")
-  @Produces({MediaType.TEXT_PLAIN, CSVMessageBodyWriter.TEXT_CSV, MediaType.APPLICATION_JSON})
+  @Produces({MediaType.TEXT_PLAIN, "text/csv", MediaType.APPLICATION_JSON})
   public List<IDValue> get(
       @PathParam("userID") String userID,
       @PathParam("itemID") String itemID,
@@ -75,30 +71,16 @@ public final class Because extends AbstractALSResource {
       return Collections.emptyList();
     }
 
-    Iterable<Pair<String,Double>> idSimilarities =
-        Iterables.transform(knownItemVectors, new CosineSimilarityFunction(itemVector));
-
-    Ordering<Pair<?,Double>> ordering =
-        Ordering.from(PairComparators.<Double>bySecond());
-    return toIDValueResponse(
-        ordering.greatestOf(idSimilarities, howMany + offset), howMany, offset);
-  }
-
-  private static final class CosineSimilarityFunction
-      implements Function<Pair<String,float[]>,Pair<String,Double>> {
-    private final float[] itemVector;
-    private final double itemVectorNorm;
-    CosineSimilarityFunction(float[] itemVector) {
-      this.itemVector = itemVector;
-      this.itemVectorNorm = VectorMath.norm(itemVector);
-    }
-    @Override
-    public Pair<String,Double> apply(Pair<String,float[]> itemIDVector) {
+    double itemVectorNorm = VectorMath.norm(itemVector);
+    Stream<Pair<String,Double>> idSimilarities = knownItemVectors.stream().map(itemIDVector -> {
       float[] otherItemVector = itemIDVector.getSecond();
-      double cosineSimilarity =  VectorMath.dot(itemVector, otherItemVector) /
+      double cosineSimilarity = VectorMath.dot(itemVector, otherItemVector) /
           (itemVectorNorm * VectorMath.norm(otherItemVector));
       return new Pair<>(itemIDVector.getFirst(), cosineSimilarity);
-    }
+    });
+
+    return toIDValueResponse(idSimilarities.sorted(Pairs.orderBySecond(Pairs.SortOrder.DESCENDING)),
+                             howMany, offset);
   }
 
 }

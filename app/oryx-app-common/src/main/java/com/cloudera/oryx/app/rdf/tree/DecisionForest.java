@@ -16,13 +16,11 @@
 package com.cloudera.oryx.app.rdf.tree;
 
 import java.util.Arrays;
+import java.util.stream.Collectors;
 
-import com.google.common.base.Function;
-import com.google.common.collect.Lists;
-
-import com.cloudera.oryx.app.rdf.predict.Prediction;
-import com.cloudera.oryx.app.rdf.example.Example;
-import com.cloudera.oryx.app.rdf.predict.WeightedPrediction;
+import com.cloudera.oryx.app.classreg.predict.Prediction;
+import com.cloudera.oryx.app.classreg.example.Example;
+import com.cloudera.oryx.app.classreg.predict.WeightedPrediction;
 
 /**
  * An ensemble classifier based on many {@link DecisionTree}s.
@@ -67,7 +65,8 @@ public final class DecisionForest implements TreeBasedClassifier {
   @Override
   public Prediction predict(Example test) {
     return WeightedPrediction.voteOnFeature(
-        Lists.transform(Arrays.asList(trees), new TreeToPredictionFunction(test)), weights);
+        Arrays.stream(trees).map(tree -> tree.predict(test)).collect(Collectors.toList()),
+        weights);
   }
 
   @Override
@@ -86,14 +85,4 @@ public final class DecisionForest implements TreeBasedClassifier {
     return result.toString();
   }
 
-  private static final class TreeToPredictionFunction implements Function<DecisionTree, Prediction> {
-    private final Example test;
-    TreeToPredictionFunction(Example test) {
-      this.test = test;
-    }
-    @Override
-    public Prediction apply(DecisionTree tree) {
-      return tree.predict(test);
-    }
-  }
 }

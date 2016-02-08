@@ -25,6 +25,7 @@ import com.cloudera.oryx.common.OryxTest;
 import com.cloudera.oryx.common.collection.CloseableIterator;
 import com.cloudera.oryx.common.collection.Pair;
 import com.cloudera.oryx.common.io.IOUtils;
+import com.cloudera.oryx.common.lang.LoggingCallable;
 
 /**
  * Tests {@link ProduceData} and {@link ConsumeData} together.
@@ -33,7 +34,7 @@ public final class ProduceConsumeIT extends OryxTest {
 
   private static final Logger log = LoggerFactory.getLogger(ProduceConsumeIT.class);
 
-  private static final String TOPIC = "OryxTest";
+  private static final String TOPIC = ProduceConsumeIT.class.getSimpleName() + "Topic";
   private static final int NUM_DATA = 100;
 
   @Test
@@ -61,7 +62,7 @@ public final class ProduceConsumeIT extends OryxTest {
 
         log.info("Starting consumer thread");
         ConsumeTopicRunnable consumeTopic = new ConsumeTopicRunnable(data, NUM_DATA);
-        new Thread(consumeTopic, "ConsumeTopicThread").start();
+        new Thread(LoggingCallable.log(consumeTopic).asRunnable(), "ConsumeTopicThread").start();
 
         consumeTopic.awaitRun();
 
@@ -79,7 +80,7 @@ public final class ProduceConsumeIT extends OryxTest {
         assertEquals(NUM_DATA, keys.size());
       }
       for (int i = 0; i < NUM_DATA; i++) {
-        assertTrue(keys.contains(Integer.toString(i)));
+        assertContains(keys, Integer.toString(i));
       }
     }
   }

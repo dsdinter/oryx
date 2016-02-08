@@ -25,7 +25,6 @@ import com.typesafe.config.Config;
 import org.apache.hadoop.fs.Path;
 import org.apache.spark.api.java.JavaRDD;
 import org.apache.spark.api.java.JavaSparkContext;
-import org.apache.spark.api.java.function.Function;
 import org.apache.spark.mllib.clustering.KMeans;
 import org.apache.spark.mllib.clustering.KMeansModel;
 import org.apache.spark.mllib.linalg.Vector;
@@ -126,13 +125,8 @@ public final class KMeansUpdate extends MLUpdate<String> {
    * @return map of ClusterId, count of points associated with the clusterId
    */
   private static Map<Integer,Long> fetchClusterCountsFromModel(JavaRDD<Vector> trainPointData,
-                                                               final KMeansModel model) {
-     return trainPointData.map(new Function<Vector, Integer>() {
-       @Override
-       public Integer call(Vector vector) {
-         return model.predict(vector);
-       }
-     }).countByValue();
+                                                               KMeansModel model) {
+     return trainPointData.map(model::predict).countByValue();
   }
 
   /**
@@ -156,26 +150,25 @@ public final class KMeansUpdate extends MLUpdate<String> {
     log.info("Evaluation Strategy is {}", evaluationStrategy);
     double eval;
     switch (evaluationStrategy) {
-      case DAVIES_BOULDIN :
-        DaviesBouldinIndex daviesBouldinIndex = new DaviesBouldinIndex(clusterInfoList);
-        double dbIndex = daviesBouldinIndex.evaluate(evalData);
+      case DAVIES_BOULDIN:
+        double dbIndex = new DaviesBouldinIndex(clusterInfoList).evaluate(evalData);
+        log.info("Davies-Bouldin index: {}", dbIndex);
         eval = -dbIndex;
-        log.info("Davies-Bouldin index {}", dbIndex);
         break;
-      case DUNN :
-        DunnIndex dunnIndex = new DunnIndex(clusterInfoList);
-        eval = dunnIndex.evaluate(evalData);
-        log.info("Dunn index / eval {}", eval);
+      case DUNN:
+        double dunnIndex = new DunnIndex(clusterInfoList).evaluate(evalData);
+        log.info("Dunn index: {}", dunnIndex);
+        eval = dunnIndex;
         break;
       case SILHOUETTE:
-        SilhouetteCoefficient silhouetteCoefficient = new SilhouetteCoefficient(clusterInfoList);
-        eval = silhouetteCoefficient.evaluate(evalData);
-        log.info("Silhouette Coefficient / eval {}", eval);
+        double silhouette = new SilhouetteCoefficient(clusterInfoList).evaluate(evalData);
+        log.info("Silhouette Coefficient: {}", silhouette);
+        eval = silhouette;
         break;
       case SSE :
-        double sse = pmmlToKMeansModel(model).computeCost(evalData.rdd());
+        double sse = new SumSquaredError(clusterInfoList).evaluate(evalData);
+        log.info("Sum squared error: {}", sse);
         eval = -sse;
-        log.info("Sum of squared error {}", sse);
         break;
       default:
         throw new IllegalArgumentException("Unknown evaluation strategy " + evaluationStrategy);
@@ -192,7 +185,7 @@ public final class KMeansUpdate extends MLUpdate<String> {
     ClusteringModel clusteringModel = pmmlClusteringModel(model, clusterSizesMap);
     PMML pmml = PMMLUtils.buildSkeletonPMML();
     pmml.setDataDictionary(AppPMMLUtils.buildDataDictionary(inputSchema, null));
-    pmml.getModels().add(clusteringModel);
+    pmml.addModels(clusteringModel);
     return pmml;
   }
 
@@ -227,29 +220,13 @@ public final class KMeansUpdate extends MLUpdate<String> {
         clusters);
   }
 
-  /**
-   * @param pmml PMML model to retrieve the original {@link KMeansModel} from
-   * @return {@link KMeansModel} from PMML
-   */
-  private static KMeansModel pmmlToKMeansModel(PMML pmml) {
-    List<ClusterInfo> clusterInfos = KMeansPMMLUtils.read(pmml);
-    Vector[] clusterCenters = new Vector[clusterInfos.size()];
-    for (ClusterInfo clusterInfo : clusterInfos) {
-      clusterCenters[clusterInfo.getID()] = Vectors.dense(clusterInfo.getCenter());
-    }
-    return new KMeansModel(clusterCenters);
-  }
-
   private JavaRDD<Vector> parsedToVectorRDD(JavaRDD<String[]> parsedRDD) {
-    return parsedRDD.map(new Function<String[], Vector>() {
-      @Override
-      public Vector call(String[] data) {
-        try {
-          return Vectors.dense(KMeansUtils.featuresFromTokens(data, inputSchema));
-        } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
-          log.warn("Bad input: {}", Arrays.toString(data));
-          throw e;
-        }
+    return parsedRDD.map(data -> {
+      try {
+        return Vectors.dense(KMeansUtils.featuresFromTokens(data, inputSchema));
+      } catch (NumberFormatException | ArrayIndexOutOfBoundsException e) {
+        log.warn("Bad input: {}", Arrays.toString(data));
+        throw e;
       }
     });
   }

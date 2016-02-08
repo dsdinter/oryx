@@ -15,6 +15,9 @@
 
 package com.cloudera.oryx.app.als;
 
+import com.cloudera.oryx.common.math.Solver;
+import com.cloudera.oryx.common.math.VectorMath;
+
 /**
  * ALS-related utility methods for the app tier.
  */
@@ -22,22 +25,84 @@ public final class ALSUtils {
 
   private ALSUtils() {}
 
-  public static double implicitTargetQui(double value, double currentValue) {
-    // Target is really 1, or 0, depending on whether value is positive or negative.
-    // This wouldn't account for the strength though. Instead the target is a function
-    // of the current value and strength. If the current value is c, and value is positive
-    // then the target is somewhere between c and 1 depending on the strength. If current
-    // value is already >= 1, there's no effect. Similarly for negative values.
-    if (value > 0.0f && currentValue < 1.0) {
-      double diff = 1.0 - Math.max(0.0, currentValue);
-      return currentValue + (value / (1.0 + value)) * diff;
+  /**
+   * Computes how the estimated strength of interaction in the model should change -- to what target
+   * value -- in response to a new interaction.
+   *
+   * @param implicit whether the model is implicit feedback
+   * @param value new interaction's strength
+   * @param currentValue existing estimated of strength of interaction
+   * @return new target estimated of strength of interaction, or NaN to signal "no change needed"
+   */
+  public static double computeTargetQui(boolean implicit, double value, double currentValue) {
+    // We want Qui to change based on value. What's the target value, Qui'?
+    if (implicit) {
+      // Target is really 1, or 0, depending on whether value is positive or negative.
+      // This wouldn't account for the strength though. Instead the target is a function
+      // of the current value and strength. If the current value is c, and value is positive
+      // then the target is somewhere between c and 1 depending on the strength. If current
+      // value is already >= 1, there's no effect. Similarly for negative values.
+      if (value > 0.0f && currentValue < 1.0) {
+        double diff = 1.0 - Math.max(0.0, currentValue);
+        return currentValue + (value / (1.0 + value)) * diff;
+      }
+      if (value < 0.0f && currentValue > 0.0) {
+        double diff = -Math.min(1.0, currentValue);
+        return currentValue + (value / (value - 1.0)) * diff;
+      }
+      // No change
+      return Double.NaN;
+    } else {
+      // Non-implicit -- value is supposed to be the new value
+      return value;
     }
-    if (value < 0.0f && currentValue > 0.0) {
-      double diff = -Math.min(1.0, currentValue);
-      return currentValue + (value / (value - 1.0)) * diff;
+  }
+
+  /**
+   * Computes how a user vector Xu changes in response to interaction with an item vector Yi.
+   * This can also be used to compute how an item vector changes in response to a user interaction,
+   * even though the code naming follows the former convention.
+   *
+   * @param solver solver helping solve for Xu in Qu*Y = Xu * (Yt * Y)
+   * @param value strength of interaction
+   * @param Xu current user vector (null if no existing user vector)
+   * @param Yi current item vector
+   * @param implicit whether the model is implicit feedback
+   * @return new user vector Xu, or {@code null} if no update should be made (i.e. there was no
+   *  item vector; the update would push the new Qui farther out of range)
+   */
+  public static float[] computeUpdatedXu(Solver solver,
+                                         double value,
+                                         float[] Xu,
+                                         float[] Yi,
+                                         boolean implicit) {
+    if (Yi == null) {
+      return null;
     }
-    // No change
-    return Double.NaN;
+
+    double Qui = Xu == null ? 0.0 : VectorMath.dot(Xu, Yi);
+    // Qui' is the target, new value of Qui
+    // 0.5 reflects a "don't know" state
+    double targetQui = computeTargetQui(implicit, value, Xu == null ? 0.5 : Qui);
+    if (Double.isNaN(targetQui)) {
+      return null;
+    }
+
+    double dQui = targetQui - Qui;
+    float[] dQuiYi = Yi.clone();
+    for (int i = 0; i < dQuiYi.length; i++) {
+      dQuiYi[i] *= dQui;
+    }
+    float[] dXu = solver.solveFToF(dQuiYi);
+
+    if (Xu == null) {
+      return dXu;
+    }
+    float[] newXu = Xu.clone();
+    for (int i = 0; i < newXu.length; i++) {
+      newXu[i] += dXu[i];
+    }
+    return newXu;
   }
 
 }
